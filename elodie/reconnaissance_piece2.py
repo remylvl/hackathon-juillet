@@ -5,7 +5,7 @@ from scipy import ndimage
 from skimage.feature import corner_harris, corner_peaks
 
 
-img = image.imread("piece1.jpg")
+img = image.imread("./elodie/piece1.jpg")
 #plt.imshow(img)
 #plt.show()
 img_gris = img[:, :, 2]
