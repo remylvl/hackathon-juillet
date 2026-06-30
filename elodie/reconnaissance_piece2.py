@@ -3,21 +3,20 @@ import matplotlib.pyplot as plt
 from matplotlib import image
 from scipy import ndimage
 from skimage.feature import corner_harris, corner_peaks
+from skimage import measure
 
 
-img = image.imread("piece1.jpg")
+img = image.imread("./resources/piece4.jpeg")
 #plt.imshow(img)
 #plt.show()
-img_gris = img[:, :, 2]
-seuil = 148  
+img_gris = img[:, :, 1]
+seuil = 160  
 img_seuil = np.where(img_gris > seuil, 0, 255)
 masque = img_seuil > 0
 
 #plt.imshow(img_gris, cmap="grey")
 #plt.show()
 
-from scipy import ndimage
-import numpy as np
 
 # 1. Enlever les petits points isolés (bruit "poivre" à l'extérieur)
 masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
@@ -46,40 +45,45 @@ for i, ligne in enumerate(bord):       # i = indice de la ligne (row)
             X.append(i)
             Y.append(j)
 
-plt.figure()
-plt.plot( X, Y, '.', markersize=1)
-plt.axis("equal")
+#plt.figure()
+#plt.plot( X, Y, '.', markersize=1)
+#plt.axis("equal")
 #plt.show()
 
 # 5. Détection des coins sur la forme pleine (pas juste le contour)
 reponse = corner_harris(masque_final.astype(float))
-coins = corner_peaks(reponse, min_distance=40, threshold_rel=0.3)
+coins = corner_peaks(reponse, min_distance=150, threshold_rel=0.1)
 # coins a la forme (nb_coins, 2), colonnes = (row, col)
 
-plt.figure()
-plt.plot(X, Y, '.', markersize=1)
-plt.scatter(coins[:, 0], coins[:, 1], color='red', s=60)
-plt.axis("equal")
+#plt.figure()
+#plt.plot(X, Y, '.', markersize=1)
+#plt.scatter(coins[:, 0], coins[:, 1], color='red', s=60)
+#plt.axis("equal")
 #plt.show()
 
 print(f"{len(coins)} coins détectés :")
-print(coins)
-
-
-from skimage import measure
+#print(coins)
 
 contours = measure.find_contours(masque_final, level=0.5)
 contour_principal = max(contours, key=len)
 
 # Simplifie le contour en gardant les sommets significatifs
-contour_simplifie = measure.approximate_polygon(contour_principal, tolerance=15)
+contour_simplifie = measure.approximate_polygon(contour_principal, tolerance=10)
 
 plt.figure()
 plt.plot(X, Y, '.', markersize=1)
 plt.scatter(contour_simplifie[:, 0], contour_simplifie[:, 1], color='red', s=60)
 plt.axis("equal")
-#plt.show()
+plt.title("contour simplifie")
+plt.show()
 
+# 1. Retrouver l'indice de chaque coin dans le contour original
+def trouver_indice(contour, point):
+    distances = np.sqrt((contour[:, 0] - point[0])**2 + (contour[:, 1] - point[1])**2)
+    return np.argmin(distances)
+
+indices_coins = sorted([trouver_indice(contour_principal, c) for c in coins])
+print("Indices des coins dans le contour :", indices_coins)
 
 
 def fusionner_points_proches(points, distance_min=100):
@@ -91,8 +95,45 @@ def fusionner_points_proches(points, distance_min=100):
             points_filtres.append(p)
     return np.array(points_filtres)
 
-contour_simplifie_propre = fusionner_points_proches(contour_simplifie, distance_min=800)
+def max_courbure(contour, points, seuil, distance_min, nb_coins = 4):
+    points_filtres = []
+    min_filtres = []
+    i_filtres = []
+    max_min = 10000000
+    i_min = 0
+
+    for i in range(len(points)):
+        p = contour[points[i]]
+        S = 0
+        for j in range(seuil):
+            pdt = abs((contour[points[i] - seuil][0] - contour[points[i]][0])*(contour[points[i] + seuil][0] - contour[points[i]][0]) + (contour[points[i] - seuil][1] - contour[points[i]][1])*(contour[points[i] + seuil][1] - contour[points[i]][1]))
+            S += pdt
+        if len(points_filtres) < nb_coins:
+            points_filtres.append(p)
+            min_filtres.append(S)
+            i_filtres.append(points[i])
+            max_min = max(min_filtres)
+            i_min = np.argmax(min_filtres)
+        elif S < max_min :
+            for q in points_filtres:
+                d = np.sqrt((q[0]-p[0])**2 +(q[1]-p[1])**2)
+                if d < distance_min :
+                    continue
+            points_filtres[i_min] = p
+            min_filtres[i_min] = S
+            i_filtres[i_min] = points[i]
+            max_min = max(min_filtres)
+            i_min = np.argmax(min_filtres)
+    return np.array(points_filtres), np.array(i_filtres)
+
+#contour_simplifie_propre = fusionner_points_proches(contour_simplifie, distance_min=300)
+indices_points = []
+for p in contour_simplifie:
+    indices_points.append(trouver_indice(contour_principal, p))
+contour_simplifie_propre, indices_coins = max_courbure(contour_principal, indices_points, 50, 100)
+indices_coins = np.sort(indices_coins)
 print(f"{len(contour_simplifie_propre)} points après fusion")
+print(contour_simplifie_propre, indices_coins)
 
 plt.figure()
 plt.plot(X, Y, '.', markersize=1)
@@ -100,7 +141,7 @@ plt.scatter(contour_simplifie_propre[:, 0], contour_simplifie_propre[:, 1], colo
 plt.axis("equal")
 #plt.show()
 
-print(contour_simplifie_propre)
+""" print(contour_simplifie_propre)
 
 points = contour_simplifie_propre
 
@@ -113,17 +154,10 @@ for p in points:
         points_uniques.append(p)
 
 points_uniques = np.array(points_uniques)
-print("points uniques : ", points_uniques)
+print("points uniques : ", points_uniques) """
 
-coins_finaux = points_uniques  
+coins_finaux = contour_simplifie_propre  
 
-# 1. Retrouver l'indice de chaque coin dans le contour original
-def trouver_indice(contour, point):
-    distances = np.sqrt((contour[:, 0] - point[0])**2 + (contour[:, 1] - point[1])**2)
-    return np.argmin(distances)
-
-indices_coins = sorted([trouver_indice(contour_principal, c) for c in coins_finaux])
-print("Indices des coins dans le contour :", indices_coins)
 
 # 2. Découper le contour en segments entre coins consécutifs
 def extraire_segments(contour, indices):
