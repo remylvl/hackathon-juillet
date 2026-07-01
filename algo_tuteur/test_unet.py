@@ -5,7 +5,6 @@ from torch.utils.data import DataLoader
 import cv2
 
 # Import de l'architecture et du générateur créés précédemment
-# (Assure-toi que ces classes sont bien accessibles dans ton projet)
 from train_unet import PuzzleUNet, PuzzleDataset 
 
 def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 15) -> np.ndarray:
