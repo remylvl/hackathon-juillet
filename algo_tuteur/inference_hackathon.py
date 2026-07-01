@@ -142,7 +142,7 @@ def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray) -> np.nda
             
     return np.array(refined_corners, dtype=np.int32)
 
-def load_trained_model(weights_path="unet_puzzle_weights.pth"):
+def load_trained_model(weights_path="algo_tuteur/unet_puzzle_weights.pth"):
     """ Charge le modèle en mémoire et le prépare pour la prédiction pure. """
     
     # 1. Détection matérielle optimisée pour ton architecture
@@ -219,7 +219,7 @@ if __name__ == "__main__":
     dict_ctrl = {}
 
     print("1. Chargement de l'IA...")
-    unet_model, device = load_trained_model("unet_puzzle_weights.pth")
+    unet_model, device = load_trained_model("algo_tuteur/unet_puzzle_weights.pth")
     
     # 2. Définition de la pièce en cours de traitement
     image_path = "algo_tuteur/photo_test_5.jpg"
@@ -268,7 +268,7 @@ if __name__ == "__main__":
         ax = axes[cote_idx]
         ax.plot(segment[:, 0], segment[:, 1], '.', markersize=2, label='Contour IA', color='gray', alpha=0.5)
         ax.plot(courbe_finale[:, 0], courbe_finale[:, 1], '-', label='B-Spline', color='blue', linewidth=2)
-        ax.plot(ctrl_opt[:, 0], ctrl_opt[:, 1], 'rx', label='9 Points de Contrôle', markersize=8, markeredgewidth=2)
+        ax.plot(ctrl_opt[:, 0], ctrl_opt[:, 1], 'rx', label='12 Points de Contrôle', markersize=8, markeredgewidth=2)
         
         ax.set_title(f"Bord {cote_idx}")
         ax.axis('equal')
