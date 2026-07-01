@@ -4,13 +4,34 @@ from matplotlib import image
 from scipy import ndimage
 from skimage.feature import corner_harris, corner_peaks
 from skimage import measure
+from skimage.color import rgb2hsv
 
 
-img = image.imread("./elodie/piece1.jpg")
-img_gris = img[:, :, 2]
-seuil = 148  
-img_seuil = np.where(img_gris > seuil, 0, 255)
-masque = img_seuil > 0
+fichier_image = "./resources/piece3.jpeg"
+img = image.imread(fichier_image)
+img_hsv = rgb2hsv(img[:, :, :3])  # garde seulement RGB si l'image a un canal alpha
+#plt.imshow(img)
+#plt.show()
+img_h = img_hsv[:, :, 0]
+img_s = img_hsv[:, :, 1]
+img_v = img_hsv[:, :, 2]
+
+def creer_masque_bleu(img_h, img_s, img_v, sat_min=0.20, val_min=0.20, largeur_hue=0.06):
+    candidat = (img_s > sat_min) & (img_v > val_min)
+    if not np.any(candidat):
+        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.")
+
+    h_candidats = img_h[candidat]
+    hist, bins = np.histogram(h_candidats, bins=60, range=(0.0, 1.0))
+    i_pic = np.argmax(hist)
+    h_centre = 0.5 * (bins[i_pic] + bins[i_pic + 1])
+
+    masque = candidat & (np.abs(img_h - h_centre) <= largeur_hue)
+    return masque, h_centre
+
+
+masque, h_centre = creer_masque_bleu(img_h, img_s, img_v)
+print(f"Teinte bleue détectée automatiquement: {h_centre:.3f}")
 
 from scipy import ndimage
 import numpy as np
@@ -18,9 +39,14 @@ import numpy as np
 # 1. Enlever les petits points isolés (bruit "poivre" à l'extérieur)
 masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
 
+# 1b. Lisser un peu plus le contour pour éviter les petites dents sur piece3.
+masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((20, 20)))
+
 # 2. Ne garder que la plus grande composante connexe = la pièce
 labels, nb = ndimage.label(masque_propre)
 tailles = ndimage.sum(masque_propre, labels, range(1, nb + 1))
+if len(tailles) == 0:
+    raise ValueError("Aucune composante détectée: ajuste les seuils HSV du masque.")
 plus_grande = np.argmax(tailles) + 1
 masque_piece = labels == plus_grande
 
@@ -54,8 +80,18 @@ print(f"{len(coins)} coins détectés :")
 contours = measure.find_contours(masque_final, level=0.5)
 contour_principal = max(contours, key=len)
 
+
+def lisser_contour(contour, sigma=7):
+    contour_ferme = np.vstack([contour, contour[:1]])
+    row_lisse = ndimage.gaussian_filter1d(contour_ferme[:, 0], sigma=sigma, mode="wrap")[:-1]
+    col_lisse = ndimage.gaussian_filter1d(contour_ferme[:, 1], sigma=sigma, mode="wrap")[:-1]
+    return np.column_stack([row_lisse, col_lisse])
+
+
+contour_lisse = lisser_contour(contour_principal, sigma=7)
+
 # Simplifie le contour en gardant les sommets significatifs
-contour_simplifie = measure.approximate_polygon(contour_principal, tolerance=10)
+contour_simplifie = measure.approximate_polygon(contour_lisse, tolerance=10)
 
 plt.figure()
 plt.plot(X, Y, '.', markersize=1)
@@ -82,42 +118,47 @@ def fusionner_points_proches(points, distance_min=100):
             points_filtres.append(p)
     return np.array(points_filtres)
 
-def max_courbure(contour, points, seuil, distance_min, nb_coins = 4):
-    points_filtres = []
-    min_filtres = []
-    i_filtres = []
-    max_min = 10000000
-    i_min = 0
+def score_courbure(contour, index, seuil):
+    n = len(contour)
+    p = contour[index]
+    score = 0.0
+    for j in range(1, seuil + 1):
+        i_gauche = (index - j) % n
+        i_droite = (index + j) % n
+        score += abs((contour[i_gauche][0] - p[0]) * (contour[i_droite][0] - p[0]) + (contour[i_gauche][1] - p[1]) * (contour[i_droite][1] - p[1]))
+    return score
 
-    for i in range(len(points)):
-        p = contour[points[i]]
-        S = 0
-        for j in range(seuil):
-            pdt = abs((contour[points[i] - seuil][0] - contour[points[i]][0])*(contour[points[i] + seuil][0] - contour[points[i]][0]) + (contour[points[i] - seuil][1] - contour[points[i]][1])*(contour[points[i] + seuil][1] - contour[points[i]][1]))
-            S += pdt
-        if len(points_filtres) < nb_coins:
+def max_courbure(contour, points, seuil, distance_min, nb_coins = 4):
+    if len(points) == 0:
+        return np.array([]), np.array([])
+
+    scores = [score_courbure(contour, index, seuil) for index in points]
+    ordre = np.argsort(scores)
+    points_filtres = []
+    i_filtres = []
+
+    for idx in ordre:
+        index = points[idx]
+        p = contour[index]
+        trop_proche = False
+        for q in points_filtres:
+            d = np.sqrt((q[0] - p[0])**2 + (q[1] - p[1])**2)
+            if d < distance_min:
+                trop_proche = True
+                break
+        if not trop_proche:
             points_filtres.append(p)
-            min_filtres.append(S)
-            i_filtres.append(points[i])
-            max_min = max(min_filtres)
-            i_min = np.argmax(min_filtres)
-        elif S < max_min :
-            for q in points_filtres:
-                d = np.sqrt((q[0]-p[0])**2 +(q[1]-p[1])**2)
-                if d < distance_min :
-                    continue
-            points_filtres[i_min] = p
-            min_filtres[i_min] = S
-            i_filtres[i_min] = points[i]
-            max_min = max(min_filtres)
-            i_min = np.argmax(min_filtres)
+            i_filtres.append(index)
+        if len(points_filtres) == nb_coins:
+            break
+
     return np.array(points_filtres), np.array(i_filtres)
 
 #contour_simplifie_propre = fusionner_points_proches(contour_simplifie, distance_min=300)
 indices_points = []
 for p in contour_simplifie:
     indices_points.append(trouver_indice(contour_principal, p))
-contour_simplifie_propre, indices_coins = max_courbure(contour_principal, indices_points, 50, 100)
+contour_simplifie_propre, indices_coins = max_courbure(contour_principal, indices_points, 50, 200)
 indices_coins = np.sort(indices_coins)
 print(f"{len(contour_simplifie_propre)} points après fusion")
 
