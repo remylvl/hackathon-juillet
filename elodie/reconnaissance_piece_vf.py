@@ -342,11 +342,13 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, afficher=AFFICHER_GRAPHIQUES):
         afficher_splines(segments, splines)
         afficher_segments_normalises(segments)
 
+    segments_norm = [normaliser_segment(seg) for seg in segments]
+
     return {
         "masque_final": masque_final,
         "contour_principal": contour_principal,
         "coins": coins_finaux,
-        "segments": segments,
+        "segments": segments_norm,
         "splines": splines,
     }
 
