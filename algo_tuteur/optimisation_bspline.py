@@ -3,48 +3,68 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import BSpline
 from scipy.optimize import least_squares
 
-def fit_spline_to_segment(Q, degree=3, n_ctrl=9):
+def fit_spline_to_segment(Q, degree=2, n_ctrl=9):
     """
-    Ajuste une courbe B-spline sur un segment de points Q.
-    Q : numpy array de shape (N, 2) contenant les pixels normalisés du bord.
+    Ajuste une B-spline avec paramétrisation par longueur d'arc (Chordal)
+    et verrouillage strict des extrémités à (0,0) et (1,0).
     """
     N = len(Q)
-    
-    # Paramétrisation temporelle des points du contour (de 0 à 1)
-    t = np.linspace(0, 1, N)
 
-    # Création du vecteur de nœuds uniforme (knots)
+    # ==========================================
+    # CORRECTION CRITIQUE 1 : Paramétrisation Chordal
+    # On calcule la distance réelle entre chaque pixel du contour IA.
+    # ==========================================
+    diffs = np.diff(Q, axis=0)
+    dists = np.linalg.norm(diffs, axis=1)
+    
+    t = np.zeros(N)
+    t[1:] = np.cumsum(dists) # Distance cumulée
+    t /= t[-1]               # On normalise pour que t aille de 0.0 à 1.0
+
+    # Création du vecteur de nœuds
     knots = np.concatenate((
         np.zeros(degree),
         np.linspace(0, 1, n_ctrl - degree + 1),
         np.ones(degree)
     ))
 
-    def cost(ctrl_flat):
-        """ Fonction de perte (résidus) pour les moindres carrés """
-        ctrl = ctrl_flat.reshape((n_ctrl, 2))
+    # ==========================================
+    # CORRECTION CRITIQUE 2 : Verrouillage des coins
+    # ==========================================
+    def cost(ctrl_flat_reduced):
+        # L'optimiseur ne manipule que les 7 points du milieu
+        ctrl_interior = ctrl_flat_reduced.reshape((n_ctrl - 2, 2))
+        
+        # On force les points 0 et 8 aux extrémités géométriques
+        ctrl = np.vstack(([0, 0], ctrl_interior, [1, 0]))
 
-        # Construction des splines X et Y
         spline_x = BSpline(knots, ctrl[:, 0], degree)
         spline_y = BSpline(knots, ctrl[:, 1], degree)
-
-        # Évaluation de la spline aux temps t
+        
+        # Évaluation aux vrais instants géométriques 't'
         C = np.column_stack((spline_x(t), spline_y(t)))
-
-        # Retourne le vecteur des distances (erreurs) aplati
+        
         return (C - Q).ravel()
 
-    # Initialisation intelligente : on prend 9 points répartis uniformément sur le contour OpenCV
-    indices_initiaux = np.linspace(0, N - 1, n_ctrl).astype(int)
-    init_ctrl = Q[indices_initiaux]
-
-    # Optimisation Levenberg-Marquardt
-    result = least_squares(cost, init_ctrl.ravel())
-
-    # Formatage du résultat
-    ctrl_opt = result.x.reshape((n_ctrl, 2))
+    # ==========================================
+    # CORRECTION CRITIQUE 3 : Initialisation intelligente
+    # On place les points initiaux en se basant sur les distances réelles.
+    # ==========================================
+    target_t = np.linspace(0, 1, n_ctrl)
+    indices_initiaux = [np.argmin(np.abs(t - val)) for val in target_t]
     
-    return ctrl_opt, knots
+    init_ctrl_full = Q[indices_initiaux]
+    # On retire les extrémités de l'initialisation car elles sont verrouillées
+    init_ctrl_reduced = init_ctrl_full[1:-1] 
+
+    # Optimisation (uniquement sur les 14 variables du milieu)
+    result = least_squares(cost, init_ctrl_reduced.ravel(), method='lm')
+
+    # Reconstruction de la matrice finale des 9 points
+    ctrl_opt_interior = result.x.reshape((n_ctrl - 2, 2))
+    ctrl_opt_final = np.vstack(([0, 0], ctrl_opt_interior, [1, 0]))
+    
+    return ctrl_opt_final, knots
 
 
 # ============================================================
@@ -63,7 +83,7 @@ if __name__ == "__main__":
     
     print("2. Prédiction sur la photo...")
     # Remplace par le nom de ta vraie image scannée/photographiée
-    mask, original, corners = predict_mask(unet_model, device, "algo_tuteur/photo_test_1.jpg")
+    mask, original, corners = predict_mask(unet_model, device, "algo_tuteur/photo_test_5.jpg")
     
     print("3. Découpage et Normalisation des 4 bords...")
     # C'est cette fonction qui va te créer une liste de 4 vrais segments !
@@ -79,7 +99,7 @@ if __name__ == "__main__":
         
         # Appel de l'algorithme de ton camarade
         ctrl_opt, knots = fit_spline_to_segment(segment)
-        degree = 3
+        degree = 2
         
         # Reconstruction mathématique pour l'affichage
         t_plot = np.linspace(0, 1, 200)

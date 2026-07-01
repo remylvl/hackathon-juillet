@@ -108,6 +108,40 @@ def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 15) -> 
         
     return np.array(corners, dtype=np.int32)
 
+
+def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray) -> np.ndarray:
+    """
+    Corrige l'imprécision de l'IA en 'aimantant' ses prédictions
+    sur les vrais angles géométriques détectés mathématiquement.
+    """
+    # 1. Détection de tous les angles saillants sur le masque binaire pur (Shi-Tomasi)
+    # On autorise jusqu'à 20 coins (les 4 de la pièce + les fausses alertes des encoches)
+    math_corners = cv2.goodFeaturesToTrack(
+        mask, maxCorners=20, qualityLevel=0.01, minDistance=15
+    )
+    
+    if math_corners is None:
+        print("Attention : Aucun coin mathématique trouvé, on garde l'IA brute.")
+        return nn_corners
+        
+    math_corners = math_corners.reshape(-1, 2)
+    refined_corners = []
+    
+    # 2. Association de l'IA avec la Mathématique
+    for nn_c in nn_corners:
+        # On calcule la distance entre le point prédit par l'IA et tous les vrais coins
+        distances = np.linalg.norm(math_corners - nn_c, axis=1)
+        closest_idx = np.argmin(distances)
+        
+        # Si un vrai coin existe dans un rayon de 40 pixels, on s'y accroche
+        if distances[closest_idx] < 40: 
+            refined_corners.append(math_corners[closest_idx])
+        else:
+            # Sinon (cas d'erreur rare), on fait confiance à l'IA
+            refined_corners.append(nn_c)
+            
+    return np.array(refined_corners, dtype=np.int32)
+
 def load_trained_model(weights_path="unet_puzzle_weights.pth"):
     """ Charge le modèle en mémoire et le prépare pour la prédiction pure. """
     
@@ -162,53 +196,91 @@ def predict_mask(model, device, image_path):
     final_cv2_mask = binary_mask * 255
     
     # 2. Extraction des Coins
-    corners = extract_four_corners(heatmap_corners, min_distance_pixels=15)
+    corners = extract_four_corners(heatmap_corners, min_distance_pixels=60)
     
-    # CRITIQUE : Ajout de 'corners' dans le retour de la fonction
+    corners = refine_corners_with_math(final_cv2_mask, corners)
+    
     return final_cv2_mask, img_resized, corners
 
-# ============================================================
-# EXÉCUTION PRINCIPALE
-# ============================================================
-# ============================================================
-# EXÉCUTION PRINCIPALE
-# ============================================================
+
+
+# EXÉCUTION RÉELLE (Liaison IA -> Mathématiques -> Données)
 if __name__ == "__main__":
-    print("Initialisation du pipeline de segmentation...")
-    unet_model, compute_device = load_trained_model("unet_puzzle_weights.pth")
+    from inference_hackathon import load_trained_model, predict_mask, refine_corners_with_math
+    from geometry_utils import extract_and_normalize_edges
+    from optimisation_bspline import fit_spline_to_segment
+    import os
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from scipy.interpolate import BSpline
+
+    # 1. Initialisation de la structure de données globale
+    # Ce dictionnaire contiendra toutes les pièces de ton hackathon
+    dict_ctrl = {}
+
+    print("1. Chargement de l'IA...")
+    unet_model, device = load_trained_model("unet_puzzle_weights.pth")
     
-    # Remplace par le chemin réel de ta photo de test
-    image_test = "algo_tuteur/photo_test_5.jpg" 
+    # 2. Définition de la pièce en cours de traitement
+    image_path = "algo_tuteur/photo_test_5.jpg"
     
-    try:
-        mask, original, corners_extrait = predict_mask(unet_model, compute_device, image_test)
+    # Astuce : Utiliser le nom du fichier sans l'extension comme ID de la pièce
+    piece_id = os.path.splitext(os.path.basename(image_path))[0] 
+    
+    # On crée l'entrée pour cette pièce spécifique
+    dict_ctrl[piece_id] = {}
+
+    print(f"2. Traitement de la pièce : {piece_id}")
+    mask, original, corners = predict_mask(unet_model, device, image_path)
+    
+    print("3. Découpage et Normalisation des 4 bords...")
+    segments_normalises = extract_and_normalize_edges(mask, corners)
+
+    print("4. Optimisation, Stockage et Affichage...")
+    
+    # Préparation de la grille graphique 2x2
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.ravel()
+    
+    # La boucle tourne 4 fois (0: Haut, 1: Droite, 2: Bas, 3: Gauche)
+    for cote_idx, segment in enumerate(segments_normalises): 
+        print(f" -> Calcul du Bord {cote_idx}...")
         
-        segments_normalises = extract_and_normalize_edges(mask, corners_extrait)
+        # Appel de l'algorithme de ton camarade (qui renvoie un array 9x2)
+        ctrl_opt, knots = fit_spline_to_segment(segment)
         
+        # ==========================================
+        # STRUCTURATION DES DONNÉES
+        # ==========================================
+        dict_ctrl[piece_id][cote_idx] = {
+            "ctrl": ctrl_opt
+        }
         
-        for i, segment in enumerate(segments_normalises):
-            print(f"Bord {i+1} : {len(segment)} points. Début={segment[0]}, Fin={segment[-1]}")
-            # Appel de la fonction des moindres carrés de ton camarade ici :
-            # resultat = fit_spline_to_edge(segment)
-        print(f"Coordonnées des 4 coins trouvés (X, Y) : \n{corners_extrait}")
+        # ==========================================
+        # RECONSTRUCTION GRAPHIQUE
+        # ==========================================
+        degree = 2
+        t_plot = np.linspace(0, 1, 200)
+        spline_x = BSpline(knots, ctrl_opt[:, 0], degree)
+        spline_y = BSpline(knots, ctrl_opt[:, 1], degree)
+        courbe_finale = np.column_stack((spline_x(t_plot), spline_y(t_plot)))
         
-        # --- Affichage Sécurisé et Augmenté ---
-        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        ax = axes[cote_idx]
+        ax.plot(segment[:, 0], segment[:, 1], '.', markersize=2, label='Contour IA', color='gray', alpha=0.5)
+        ax.plot(courbe_finale[:, 0], courbe_finale[:, 1], '-', label='B-Spline', color='blue', linewidth=2)
+        ax.plot(ctrl_opt[:, 0], ctrl_opt[:, 1], 'rx', label='9 Points de Contrôle', markersize=8, markeredgewidth=2)
         
-        # 1. Image Originale + Superposition des Coins
-        axes[0].imshow(original, cmap='gray')
-        # On ajoute des croix rouges sur les coordonnées X (colonne 0) et Y (colonne 1)
-        axes[0].scatter(corners_extrait[:, 0], corners_extrait[:, 1], c='red', s=80, marker='x', linewidths=2)
-        axes[0].set_title("1. Photo Originale (256x256) + Coins Détectés")
-        axes[0].axis('off')
-        
-        # 2. Masque Binaire
-        axes[1].imshow(mask, cmap='gray')
-        axes[1].set_title("2. Masque Extrait par U-Net")
-        axes[1].axis('off')
-        
-        plt.tight_layout()
-        plt.show()
-        
-    except Exception as e:
-        print(f"Erreur d'exécution : {e}")
+        ax.set_title(f"Bord {cote_idx}")
+        ax.axis('equal')
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.6)
+
+    # Affichage de vérification dans le terminal
+    print("\n=== STRUCTURE DE DONNÉES GÉNÉRÉE ===")
+    for cote in dict_ctrl[piece_id]:
+        array_shape = dict_ctrl[piece_id][cote]["ctrl"].shape
+        print(f"Pièce '{piece_id}', Côté {cote} : Array de dimensions {array_shape}")
+
+    # Lancement de la fenêtre graphique
+    plt.tight_layout()
+    plt.show()
