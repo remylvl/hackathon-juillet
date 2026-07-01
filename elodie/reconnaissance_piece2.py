@@ -33,9 +33,8 @@ def creer_masque_bleu(img_h, img_s, img_v, sat_min=0.20, val_min=0.20, largeur_h
 masque, h_centre = creer_masque_bleu(img_h, img_s, img_v)
 print(f"Teinte bleue détectée automatiquement: {h_centre:.3f}")
 
-#plt.imshow(img_gris, cmap="grey")
-#plt.show()
-
+from scipy import ndimage
+import numpy as np
 
 # 1. Enlever les petits points isolés (bruit "poivre" à l'extérieur)
 masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
@@ -69,21 +68,11 @@ for i, ligne in enumerate(bord):       # i = indice de la ligne (row)
             X.append(i)
             Y.append(j)
 
-#plt.figure()
-#plt.plot( X, Y, '.', markersize=1)
-#plt.axis("equal")
-#plt.show()
-
 # 5. Détection des coins sur la forme pleine (pas juste le contour)
 reponse = corner_harris(masque_final.astype(float))
 coins = corner_peaks(reponse, min_distance=150, threshold_rel=0.1)
 # coins a la forme (nb_coins, 2), colonnes = (row, col)
 
-#plt.figure()
-#plt.plot(X, Y, '.', markersize=1)
-#plt.scatter(coins[:, 0], coins[:, 1], color='red', s=60)
-#plt.axis("equal")
-#plt.show()
 
 print(f"{len(coins)} coins détectés :")
 #print(coins)
@@ -172,13 +161,8 @@ for p in contour_simplifie:
 contour_simplifie_propre, indices_coins = max_courbure(contour_principal, indices_points, 50, 200)
 indices_coins = np.sort(indices_coins)
 print(f"{len(contour_simplifie_propre)} points après fusion")
-print(contour_simplifie_propre, indices_coins)
 
-plt.figure()
-plt.plot(X, Y, '.', markersize=1)
-plt.scatter(contour_simplifie_propre[:, 0], contour_simplifie_propre[:, 1], color='red', s=60)
-plt.axis("equal")
-#plt.show()
+
 
 """ print(contour_simplifie_propre)
 

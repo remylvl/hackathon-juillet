@@ -25,7 +25,7 @@ N = len(Q)
 t = np.linspace(0, 1, N)
 
 # Degré de la spline
-degree = 3
+degree = 2
 
 # Nombre de points de contrôle
 n_ctrl = 9
