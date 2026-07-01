@@ -259,7 +259,7 @@ if __name__ == "__main__":
     print("Initialisation du pipeline de segmentation...")
     unet_model, compute_device = load_trained_model("/Users/clementpho/cours-info/S2/hackathon_puzzle/hackathon-juillet/algo_tuteur/unet_puzzle_weights.pth")
     
-    image_test = "/Users/clementpho/cours-info/S2/hackathon_puzzle/hackathon-juillet/algo_tuteur/photo_test_2.png"
+    image_test = "/Users/clementpho/cours-info/S2/hackathon_puzzle/hackathon-juillet/algo_tuteur/photo_test_6.jpg"
     
     try:
         # --- ÉTAPE 1 : INFERENCE ET EXTRACTION ---
