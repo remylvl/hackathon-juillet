@@ -166,40 +166,6 @@ def predict_mask(model, device, image_path):
     
     # CRITIQUE : Ajout de 'corners' dans le retour de la fonction
     return final_cv2_mask, img_resized, corners
-# ============================================================
-# CLASSIFICATION ET LOGIQUE DE TRANSITION
-# ============================================================
-
-def classifier_cote(ctrl_points, seuil_plat=0.08):
-    """
-    Analyse les 9 points de contrôle d'une B-spline normalisée pour déterminer 
-    la forme du côté du puzzle (0: Plat, 1: Bosse, 2: Creux).
-    """
-    y_coords = ctrl_points[:, 1]
-    y_max = np.max(y_coords)
-    y_min = np.min(y_coords)
-    
-    # Test du côté Plat
-    if abs(y_max) < seuil_plat and abs(y_min) < seuil_plat:
-        return 0
-        
-    # Différenciation Bosse / Creux
-    if abs(y_max) > abs(y_min):
-        return 1  # Éloignement vers l'extérieur (Bosse)
-    else:
-        return 2  # Enfoncement vers l'intérieur (Creux)
-
-# À REMPLACER PAR LA VRAIE FONCTION DE TON CAMARADE
-def fit_spline_to_edge_MOCK(segment):
-    """ 
-    Simulation temporaire qui génère 9 points de contrôle (9, 2) 
-    à partir des points du segment pour éviter que le code ne plante.
-    """
-    # Exemple de courbe factice : 9 points répartis uniformément de X=0 à X=1
-    x_fictif = np.linspace(0, 1, 9)
-    # On génère un Y sinusoïdal simulé pour l'exemple
-    y_fictif = 0.2 * np.sin(x_fictif * np.pi) 
-    return np.stack((x_fictif, y_fictif), axis=-1)
 
 # ============================================================
 # CLASSIFICATION ET LOGIQUE DE TRANSITION
