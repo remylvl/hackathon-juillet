@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 # Import de l'architecture du modèle
 # (Assure-toi que train_unet.py est dans le même dossier)
 from train_unet import PuzzleUNet 
-import cv2
-import numpy as np
 
 def extract_and_normalize_edges(mask: np.ndarray, corners: np.ndarray) -> list:
     """
@@ -257,9 +255,9 @@ def echantillonner_9_points(segment):
 # ============================================================
 if __name__ == "__main__":
     print("Initialisation du pipeline de segmentation...")
-    unet_model, compute_device = load_trained_model("/Users/clementpho/cours-info/S2/hackathon_puzzle/hackathon-juillet/algo_tuteur/unet_puzzle_weights.pth")
+    unet_model, compute_device = load_trained_model("algo_tuteur/unet_puzzle_weights.pth")
     
-    image_test = "/Users/clementpho/cours-info/S2/hackathon_puzzle/hackathon-juillet/algo_tuteur/photo_test_2.png"
+    image_test = "algo_tuteur/photo_test_2.png"
     
     try:
         # --- ÉTAPE 1 : INFERENCE ET EXTRACTION ---
