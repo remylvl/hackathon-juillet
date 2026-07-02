@@ -21,7 +21,6 @@ import sys
 # Configuration
 # ----------------------------------------------------------------------
 
-FICHIER_IMAGE = "./resources/piece4.jpeg"
 AFFICHER_GRAPHIQUES = True  # passe à False pour désactiver tous les plt.show()
 
 SAT_MIN = 0.20
@@ -326,7 +325,7 @@ def afficher_segments_normalises(segments):
 # Pipeline principal : analyser_piece
 # ----------------------------------------------------------------------
 
-def analyser_piece(fichier_image=FICHIER_IMAGE, afficher=AFFICHER_GRAPHIQUES):
+def analyser_piece(fichier_image, afficher=AFFICHER_GRAPHIQUES):
     img, img_h, img_s, img_v = charger_image(fichier_image)
 
     masque, h_centre = creer_masque_bleu(img_h, img_s, img_v)
