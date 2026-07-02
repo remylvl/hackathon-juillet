@@ -165,43 +165,32 @@ def load_trained_model(weights_path="unet_puzzle_weights.pth"):
     return model, device
 
 def predict_mask(model, device, image_path):
-    """ Prend une vraie photo en entrée et retourne le masque binaire et les 4 coins. """
-    
-    # --- 1. PRÉ-TRAITEMENT (Extraction et formatage) ---
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
-        raise ValueError(f"Erreur : Impossible de lire l'image '{image_path}'. Vérifie le chemin.")
-    img = 255 - img
-    img_resized = cv2.resize(img, (512, 512), interpolation=cv2.INTER_AREA)
+        raise ValueError(f"Erreur : Impossible de lire l'image '{image_path}'.")
+        
+    img = 255 - img # N'oublie pas l'inversion des couleurs si besoin !
+    img_resized = cv2.resize(img, (128, 128), interpolation=cv2.INTER_AREA)
     img_normalized = img_resized.astype(np.float32) / 255.0
     
-    input_tensor = torch.from_numpy(img_normalized).unsqueeze(0).unsqueeze(0)
-    input_tensor = input_tensor.to(device)
+    input_tensor = torch.from_numpy(img_normalized).unsqueeze(0).unsqueeze(0).to(device)
     
-    # --- 2. PRÉDICTION ---
     with torch.no_grad():
         output_tensor = model(input_tensor)
         
-    # --- 3. POST-TRAITEMENT MULTI-TASK ---
-    # Le tenseur en sortie est maintenant (1, 2, 128, 128)
-    # On le ramène sur le CPU et on retire la dimension Batch : shape devient (2, 128, 128)
     output_matrix = output_tensor.squeeze().cpu().numpy()
+    probability_mask = output_matrix[0] 
+    heatmap_corners = output_matrix[1]  # LA VOICI
     
-    # Séparation des canaux
-    probability_mask = output_matrix[0]  # Canal 0 : Segmentation
-    heatmap_corners = output_matrix[1]   # Canal 1 : Carte de chaleur
-    
-    # 1. Traitement du Masque
     binary_mask = (probability_mask > 0.5).astype(np.uint8)
     final_cv2_mask = binary_mask * 255
     
-    # 2. Extraction des Coins
-    corners = extract_four_corners(heatmap_corners, min_distance_pixels=60)
-    
+    # On garde la fonction mathématique de raffinement pour le pixel près
+    corners = extract_four_corners(heatmap_corners, min_distance_pixels=15) # Ajuste à 60 si tu es repassé en 512
     corners = refine_corners_with_math(final_cv2_mask, corners)
     
-    return final_cv2_mask, img_resized, corners
-
+    # CRITIQUE : on retourne la heatmap en plus
+    return final_cv2_mask, img_resized, corners, heatmap_corners
 
 
 # EXÉCUTION RÉELLE (Liaison IA -> Mathématiques -> Données)
@@ -222,7 +211,7 @@ if __name__ == "__main__":
     unet_model, device = load_trained_model("algo_tuteur/unet_puzzle_weights.pth")
     
     # 2. Définition de la pièce en cours de traitement
-    image_path = "algo_tuteur/photo_test_5.jpg"
+    image_path = "algo_tuteur/photo_test_6.jpg"
     
     # Astuce : Utiliser le nom du fichier sans l'extension comme ID de la pièce
     piece_id = os.path.splitext(os.path.basename(image_path))[0] 
@@ -231,7 +220,15 @@ if __name__ == "__main__":
     dict_ctrl[piece_id] = {}
 
     print(f"2. Traitement de la pièce : {piece_id}")
-    mask, original, corners = predict_mask(unet_model, device, image_path)
+    # 1. On récupère les 4 variables
+    mask, original, corners, heatmap = predict_mask(unet_model, device, image_path)
+    
+    # 2. AFFICHAGE DE DIAGNOSTIC CRITIQUE
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(6, 6))
+    plt.imshow(heatmap, cmap='magma')
+    plt.title("Diagnostic IA : Carte de Chaleur des Coins")
+    plt.colorbar()
     
     print("3. Découpage et Normalisation des 4 bords...")
     segments_normalises = extract_and_normalize_edges(mask, corners)
