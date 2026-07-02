@@ -19,15 +19,16 @@ ouvrir des dizaines de fenêtres matplotlib.
 """
 
 import os
-from collections import deque
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import image
 from scipy import ndimage
+from scipy.spatial import ConvexHull
 from scipy.interpolate import splprep, splev
 from skimage import measure
 from skimage.color import rgb2hsv
+from skimage.feature import corner_harris
 
 try:
     import cv2
@@ -280,6 +281,78 @@ def detecter_coins_par_courbure(contour, nb_coins=NB_COINS, pas_echantillonnage=
     return coins, indices_coins
 
 
+def detecter_coins_harris_convexe(masque_final, contour, nb_coins=NB_COINS,
+                                   fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
+                                   sigma_harris=3, nb_tentatives_max=6):
+    """Détecte les coins d'une pièce en combinant deux critères robustes,
+    bien plus fiables qu'un simple score de courbure le long du contour :
+
+    1. Seuls les points de l'ENVELOPPE CONVEXE du contour sont candidats.
+       Ça élimine d'office les points concaves (le cou d'un tenon, le fond
+       d'une encoche), qui n'ont géométriquement rien à voir avec un coin
+       de pièce, mais qui peuvent avoir un score de courbure très élevé et
+       tromper une détection purement locale.
+
+    2. Parmi ces candidats, on garde ceux à plus forte réponse de HARRIS
+       (`skimage.feature.corner_harris`), qui détecte une vraie structure
+       de coin (deux bords ~droits qui se croisent à angle vif) et répond
+       beaucoup plus faiblement à une bosse arrondie de tenon — sur nos
+       pièces, l'écart observé est net (score ~2.5-3.3 sur un vrai coin,
+       ~0.1-0.2 sur le pic d'un tenon).
+
+    IMPORTANT : `contour` doit être le contour BRUT (celui renvoyé par
+    `extraire_contour_principal`, PAS `lisser_contour`) : le lissage gaussien
+    en mode 'wrap' introduit du bruit numérique qui fait exploser le nombre
+    de points jugés "convexes" (observé : 237 points au lieu d'une trentaine
+    sur une pièce test), ce qui rend le filtre inutile.
+
+    Renvoie (coins, indices_coins_tries), au même format que
+    `detecter_coins_par_courbure` : `coins` en (row, col), et
+    `indices_coins_tries` triés dans l'ordre du contour.
+    """
+    n = len(contour)
+    pts_xy = contour[:, ::-1]  # (x, y)
+    hull = ConvexHull(pts_xy)
+
+    reponse = corner_harris(masque_final.astype(float), sigma=sigma_harris)
+    h_max, l_max = reponse.shape
+
+    candidats = []
+    for i in hull.vertices:
+        x, y = pts_xy[i]
+        xi = int(np.clip(round(x), 0, l_max - 1))
+        yi = int(np.clip(round(y), 0, h_max - 1))
+        candidats.append((i, reponse[yi, xi]))
+    candidats.sort(key=lambda t: -t[1])
+
+    distance_min = max(10, n * fraction_distance_min)
+    coins_indices = []
+
+    for tentative in range(nb_tentatives_max):
+        coins_indices = []
+        for i, score in candidats:
+            p = contour[i]
+            trop_proche = any(
+                np.linalg.norm(contour[j] - p) < distance_min
+                for j in coins_indices
+            )
+            if not trop_proche:
+                coins_indices.append(i)
+            if len(coins_indices) == nb_coins:
+                break
+        if len(coins_indices) >= nb_coins:
+            break
+        distance_min /= 1.3
+    else:
+        print(f"⚠ Impossible d'atteindre {nb_coins} coins par Harris même en relâchant "
+              f"distance_min (obtenu : {len(coins_indices)}).")
+
+    coins_indices = np.array(sorted(coins_indices))
+    coins = contour[coins_indices] if len(coins_indices) > 0 else np.array([])
+
+    return coins, coins_indices
+
+
 # ----------------------------------------------------------------------
 # 4. Découpage en segments
 # ----------------------------------------------------------------------
@@ -353,377 +426,6 @@ def normaliser_segment(segment):
 
     return np.column_stack([along, height])
 
-
-def _reechantillonner_normalise(segment, nb_points=100, normaliser_echelle=False):
-    """Normalise un segment (repère coin-à-coin) puis ré-échantillonne sa
-    hauteur (`height`) sur `nb_points` régulièrement espacés le long de
-    l'axe coin-à-coin (`along`, ramené à [0, 1]).
-
-    Si `normaliser_echelle=True`, la hauteur est elle aussi divisée par la
-    longueur du segment : la comparaison devient alors indépendante de
-    l'échelle (utile si deux photos n'ont pas exactement le même zoom).
-    """
-    seg_norm = normaliser_segment(segment)
-    along = seg_norm[:, 0]
-    height = seg_norm[:, 1]
-
-    ordre = np.argsort(along)  # np.interp exige un x croissant
-    along = along[ordre]
-    height = height[ordre]
-
-    longueur = along[-1] - along[0]
-    if longueur <= 0:
-        raise ValueError("Segment dégénéré : impossible de le normaliser.")
-
-    along_t = (along - along[0]) / longueur
-    t_commun = np.linspace(0, 1, nb_points)
-    height_rééch = np.interp(t_commun, along_t, height)
-
-    if normaliser_echelle:
-        height_rééch = height_rééch / longueur
-
-    return height_rééch
-
-
-def est_bord_plat(segment, seuil_amplitude=15.0):
-    """Détecte si un côté est un bord plat/droit du puzzle (sans tenon ni
-    encoche), par exemple une pièce de bordure. Sur ces photos, un vrai
-    tenon/encoche a une amplitude de hauteur normalisée d'environ 50-100px,
-    contre 2-5px pour un bord droit — l'écart est net.
-
-    Ces bords ne doivent jamais être appariés : un bord droit ne s'emboîte
-    avec rien, et deux bords droits sans rapport se ressemblent par
-    coïncidence (tous deux ~plats), ce qui produit de faux matchs si on ne
-    les exclut pas explicitement.
-    """
-    seg_norm = normaliser_segment(segment)
-    amplitude = seg_norm[:, 1].max() - seg_norm[:, 1].min()
-    return amplitude < seuil_amplitude
-
-
-def comparer_splines(segment1, segment2, marge=5.0, nb_points=100,
-                      normaliser_echelle=False, autoriser_miroir=True):
-    """Compare la forme de deux côtés de pièce (segments de contour bruts,
-    en (row, col)) à une marge d'erreur près.
-
-    Principe :
-      1. Chaque segment est normalisé dans son propre repère coin-à-coin
-         (voir `normaliser_segment`), ce qui neutralise translation et rotation.
-      2. Les deux courbes de hauteur sont ré-échantillonnées sur la même
-         grille de `nb_points` le long de l'axe coin-à-coin.
-      3. On mesure l'écart RMS et l'écart max entre les deux courbes.
-      4. On compare aussi la version miroir de segment2 (utile pour tester
-         si deux côtés sont complémentaires plutôt qu'identiques).
-
-    Renvoie un dict avec "identique", "erreur_rms", "erreur_max", "miroir_utilise".
-    """
-    h1 = _reechantillonner_normalise(segment1, nb_points, normaliser_echelle)
-    h2 = _reechantillonner_normalise(segment2, nb_points, normaliser_echelle)
-
-    def erreurs(a, b):
-        diff = a - b
-        return np.sqrt(np.mean(diff ** 2)), np.max(np.abs(diff))
-
-    rms_direct, max_direct = erreurs(h1, h2)
-    miroir_utilise = False
-
-    if autoriser_miroir:
-        rms_miroir, max_miroir = erreurs(h1, -h2)
-        if rms_miroir < rms_direct:
-            rms_direct, max_direct = rms_miroir, max_miroir
-            miroir_utilise = True
-
-    return {
-        "identique": rms_direct <= marge,
-        "erreur_rms": rms_direct,
-        "erreur_max": max_direct,
-        "miroir_utilise": miroir_utilise,
-    }
-
-
-# ----------------------------------------------------------------------
-# 7. Recherche de correspondances entre bords (plusieurs pièces)
-# ----------------------------------------------------------------------
-
-def trouver_correspondances_bords(pieces, marge=5.0, nb_points=100,
-                                   normaliser_echelle=False, autoriser_miroir=True,
-                                   seuil_amplitude_bord=15.0):
-    """Compare tous les bords de toutes les pièces entre eux, deux par deux,
-    et renvoie la liste des correspondances jugées « identiques » (à la
-    marge d'erreur près), triée par erreur croissante.
-
-    Les bords plats (bordure du puzzle, voir `est_bord_plat`) sont exclus
-    de la comparaison : ils ne s'emboîtent avec rien et se ressemblent tous
-    entre eux par coïncidence, ce qui produirait sinon de faux matchs.
-
-    `pieces` : dict {nom_piece: resultat}, `resultat` étant le dict renvoyé
-    par `analyser_piece` (on utilise sa clé "segments").
-    """
-    noms = list(pieces.keys())
-    correspondances = []
-
-    plats = {
-        nom: [est_bord_plat(seg, seuil_amplitude_bord) for seg in pieces[nom]["segments"]]
-        for nom in noms
-    }
-
-    for i in range(len(noms)):
-        for j in range(i, len(noms)):
-            nom1, nom2 = noms[i], noms[j]
-            segments1 = pieces[nom1]["segments"]
-            segments2 = pieces[nom2]["segments"]
-            meme_piece = (i == j)
-
-            for b1, seg1 in enumerate(segments1):
-                if plats[nom1][b1]:
-                    continue  # bord plat : ne s'emboîte avec rien
-                for b2, seg2 in enumerate(segments2):
-                    if meme_piece and b2 <= b1:
-                        continue  # évite auto-comparaison et doublons dans la même pièce
-                    if plats[nom2][b2]:
-                        continue
-
-                    res = comparer_splines(
-                        seg1, seg2, marge=marge, nb_points=nb_points,
-                        normaliser_echelle=normaliser_echelle,
-                        autoriser_miroir=autoriser_miroir,
-                    )
-                    if res["identique"]:
-                        correspondances.append({
-                            "piece1": nom1, "bord1": b1,
-                            "piece2": nom2, "bord2": b2,
-                            "erreur_rms": res["erreur_rms"],
-                            "erreur_max": res["erreur_max"],
-                            "miroir": res["miroir_utilise"],
-                        })
-
-    correspondances.sort(key=lambda c: c["erreur_rms"])
-    return correspondances
-
-
-def meilleure_correspondance_par_bord(pieces, **kwargs):
-    """Comme `trouver_correspondances_bords`, mais ne garde que la MEILLEURE
-    correspondance pour chaque bord (un bord interne s'emboîte avec
-    exactement un autre bord ; un bord de bordure du puzzle n'en a aucun)."""
-    toutes = trouver_correspondances_bords(pieces, **kwargs)
-
-    deja_matches = set()
-    meilleures = []
-    for c in toutes:  # déjà trié par erreur croissante
-        cle1 = (c["piece1"], c["bord1"])
-        cle2 = (c["piece2"], c["bord2"])
-        if cle1 in deja_matches or cle2 in deja_matches:
-            continue
-        meilleures.append(c)
-        deja_matches.add(cle1)
-        deja_matches.add(cle2)
-
-    return meilleures
-
-
-def trouver_composantes_connexes(pieces, correspondances):
-    """Regroupe les pièces en composantes connexes du graphe de
-    correspondances de bords (indépendamment de toute position/rotation).
-
-    Sert de diagnostic : si `assembler_puzzle` ne place qu'une poignée de
-    pièces depuis `piece_depart`, c'est presque toujours que le graphe de
-    correspondances est coupé en plusieurs morceaux indépendants — cette
-    fonction les liste tous, pour voir d'un coup d'œil où sont les vrais
-    groupes de pièces reliées entre elles.
-    """
-    adjacence_pieces = {}
-    for c in correspondances:
-        adjacence_pieces.setdefault(c["piece1"], set()).add(c["piece2"])
-        adjacence_pieces.setdefault(c["piece2"], set()).add(c["piece1"])
-
-    non_visitees = set(pieces.keys())
-    composantes = []
-    while non_visitees:
-        depart = next(iter(non_visitees))
-        composante = set()
-        file = deque([depart])
-        while file:
-            nom = file.popleft()
-            if nom in composante:
-                continue
-            composante.add(nom)
-            file.extend(adjacence_pieces.get(nom, set()) - composante)
-        composantes.append(composante)
-        non_visitees -= composante
-
-    composantes.sort(key=len, reverse=True)
-    return composantes
-
-
-def afficher_composantes_connexes(pieces, correspondances):
-    """Affiche les groupes de pièces connectées entre elles (voir
-    `trouver_composantes_connexes`)."""
-    composantes = trouver_composantes_connexes(pieces, correspondances)
-    print(f"{len(composantes)} groupe(s) de pièces reliées entre elles par des correspondances :")
-    for i, comp in enumerate(composantes):
-        print(f"  groupe {i} ({len(comp)} pièce(s)) : {sorted(comp)}")
-    return composantes
-
-
-def afficher_correspondances(correspondances):
-    """Affichage lisible d'une liste de correspondances de bords."""
-    if not correspondances:
-        print("Aucune correspondance trouvée.")
-        return
-    for c in correspondances:
-        miroir = " (miroir)" if c["miroir"] else ""
-        print(
-            f"{c['piece1']} [bord {c['bord1']}]  <->  "
-            f"{c['piece2']} [bord {c['bord2']}]{miroir}  "
-            f"— erreur RMS: {c['erreur_rms']:.2f}, max: {c['erreur_max']:.2f}"
-        )
-
-
-# ----------------------------------------------------------------------
-# 8. Assemblage du puzzle (bords orientés)
-# ----------------------------------------------------------------------
-#
-# Hypothèse : pour chaque pièce, les bords sont numérotés 0, 1, 2, 3 dans
-# l'ordre où `extraire_segments` les produit en tournant autour de la
-# pièce, et cet ordre est cyclique cohérent : le bord (k+1) % 4 est le
-# voisin "à droite" du bord k, et (k-1) % 4 son voisin "à gauche". On fait
-# correspondre ce cycle aux 4 points cardinaux dans le même ordre :
-# Nord=0, Est=1, Sud=2, Ouest=3.
-#
-# Si le résultat final apparaît inversé gauche/droite par rapport à la
-# vraie pièce, `extraire_segments` tourne dans le sens inverse de celui
-# supposé ici : il suffit d'inverser le signe des rotations ci-dessous.
-
-DELTAS = {0: (0, -1), 1: (1, 0), 2: (0, 1), 3: (-1, 0)}  # (dx, dy), y vers le bas
-
-
-def construire_adjacence(correspondances):
-    """Transforme la liste de correspondances en dict bidirectionnel
-    (piece, bord) -> (piece_voisine, bord_voisin)."""
-    adjacence = {}
-    for c in correspondances:
-        adjacence[(c["piece1"], c["bord1"])] = (c["piece2"], c["bord2"])
-        adjacence[(c["piece2"], c["bord2"])] = (c["piece1"], c["bord1"])
-    return adjacence
-
-
-def assembler_puzzle(pieces, correspondances, piece_depart=None):
-    """Propage, de proche en proche à partir de `piece_depart`, la position
-    (x, y) et la rotation de chaque pièce dans une grille, via le graphe de
-    correspondances de bords.
-
-    Renvoie (placees, conflits, non_placees) :
-      - placees : dict {nom_piece: (x, y, rotation)}
-      - conflits : incohérences détectées (pièce atteinte deux fois par des
-        chemins différents avec des positions différentes) — signe de
-        correspondances probablement fausses
-      - non_placees : pièces jamais atteintes (composante déconnectée)
-    """
-    if not pieces:
-        return {}, [], []
-
-    if piece_depart is None:
-        piece_depart = next(iter(pieces))
-
-    adjacence = construire_adjacence(correspondances)
-
-    placees = {piece_depart: (0, 0, 0)}
-    file = deque([piece_depart])
-    conflits = []
-
-    while file:
-        nom = file.popleft()
-        x, y, r = placees[nom]
-
-        for cote_local in range(4):
-            voisin = adjacence.get((nom, cote_local))
-            if voisin is None:
-                continue  # pas de correspondance : bord de bordure du puzzle
-
-            nom_voisin, cote_voisin = voisin
-            direction = (cote_local - r) % 4
-            direction_opposee = (direction + 2) % 4
-            r_voisin = (cote_voisin - direction_opposee) % 4
-            dx, dy = DELTAS[direction]
-            pos_attendue = (x + dx, y + dy)
-
-            if nom_voisin in placees:
-                x_v, y_v, r_v = placees[nom_voisin]
-                if (x_v, y_v) != pos_attendue or r_v != r_voisin:
-                    conflits.append({
-                        "piece": nom_voisin,
-                        "attendu": (pos_attendue, r_voisin),
-                        "trouve": ((x_v, y_v), r_v),
-                        "via": f"{nom}[bord {cote_local}]",
-                    })
-                continue
-
-            placees[nom_voisin] = (pos_attendue[0], pos_attendue[1], r_voisin)
-            file.append(nom_voisin)
-
-    non_placees = [nom for nom in pieces if nom not in placees]
-    return placees, conflits, non_placees
-
-
-def afficher_grille(placees):
-    """Affiche la grille de pièces sous forme de texte : `nom(rX)` par case,
-    X étant la rotation (nombre de crans à appliquer aux bords locaux)."""
-    if not placees:
-        print("Aucune pièce placée.")
-        return
-
-    xs = [p[0] for p in placees.values()]
-    ys = [p[1] for p in placees.values()]
-
-    grille_noms = {(x, y): f"{nom}(r{r})" for nom, (x, y, r) in placees.items()}
-    largeur = max(len(v) for v in grille_noms.values()) + 2
-
-    for y in range(min(ys), max(ys) + 1):
-        ligne = "".join(
-            grille_noms.get((x, y), "").center(largeur)
-            for x in range(min(xs), max(xs) + 1)
-        )
-        print(ligne)
-
-
-def proposer_puzzle(pieces, marge=5.0, piece_depart=None, **kwargs_comparaison):
-    """Pipeline complet : cherche les correspondances de bords, assemble le
-    puzzle, affiche la grille et signale les problèmes éventuels.
-
-    Renvoie (placees, conflits, non_placees) comme `assembler_puzzle`.
-    """
-    correspondances = meilleure_correspondance_par_bord(pieces, marge=marge, **kwargs_comparaison)
-    print(f"{len(correspondances)} correspondances de bords retenues :")
-    afficher_correspondances(correspondances)
-    print()
-
-    composantes = afficher_composantes_connexes(pieces, correspondances)
-    print()
-
-    if piece_depart is None and composantes:
-        # Par défaut on assemble le plus gros groupe de pièces reliées entre
-        # elles, plutôt qu'un groupe arbitraire (souvent minuscule) contenant
-        # la première pièce du dict.
-        piece_depart = sorted(composantes[0])[0]
-        print(f"Point de départ choisi automatiquement : {piece_depart} "
-              f"(plus gros groupe, {len(composantes[0])} pièce(s))\n")
-
-    placees, conflits, non_placees = assembler_puzzle(pieces, correspondances, piece_depart)
-
-    print("Proposition d'assemblage :")
-    afficher_grille(placees)
-
-    if conflits:
-        print("\n⚠ Conflits détectés (probablement des correspondances erronées) :")
-        for c in conflits:
-            print(f"  {c['piece']} atteint via {c['via']} : "
-                  f"attendu {c['attendu']}, trouvé {c['trouve']}")
-
-    if non_placees:
-        print(f"\nPièces non placées (aucun chemin de correspondances depuis "
-              f"{piece_depart or next(iter(pieces))}) : {non_placees}")
-
-    return placees, conflits, non_placees
 
 
 # ----------------------------------------------------------------------
@@ -820,10 +522,24 @@ def verifier_piece_visuellement(img, masque_final, contour_principal, contour_li
 # ----------------------------------------------------------------------
 
 def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
-                    verifier=True, utiliser_grabcut=UTILISER_GRABCUT):
+                    verifier=True, utiliser_grabcut=UTILISER_GRABCUT,
+                    fraction_distance_min_coins=FRACTION_DISTANCE_MIN_COINS,
+                    sigma_harris=3):
     """Analyse une pièce et renvoie masque, contour, coins, segments et
     splines. Si `verifier=True`, enregistre (ou affiche, si
     `dossier_verification` est None) la figure récapitulative en 4 panneaux.
+
+    Les coins sont détectés par `detecter_coins_harris_convexe` : on ne
+    considère que les points de l'enveloppe convexe du contour (élimine les
+    creux d'encoches), puis on garde ceux à plus forte réponse de Harris
+    (`sigma_harris` en contrôle l'échelle) — voir la docstring de cette
+    fonction pour le détail.
+
+    `fraction_distance_min_coins` : distance minimale entre deux coins
+    retenus, en fraction du périmètre du contour. Une valeur plus PETITE
+    autorise des coins plus proches les uns des autres (utile si deux vrais
+    coins sont proches sur une pièce peu carrée) ; plus GRANDE force les
+    coins à être mieux répartis.
     """
     nom_fichier = os.path.basename(fichier_image)
 
@@ -835,9 +551,12 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
     contour_principal = extraire_contour_principal(masque_final)
     contour_lisse = lisser_contour(contour_principal, sigma=7)
 
-    coins_finaux, indices_coins = detecter_coins_par_courbure(contour_lisse, nb_coins=NB_COINS)
-    print(f"{len(coins_finaux)} coins retenus après filtrage par courbure "
-          f"(sur {len(contour_lisse)} points de contour)")
+    coins_finaux, indices_coins = detecter_coins_harris_convexe(
+        masque_final, contour_principal, nb_coins=NB_COINS,
+        fraction_distance_min=fraction_distance_min_coins,
+        sigma_harris=sigma_harris,
+    )
+    print(f"{len(coins_finaux)} coins retenus (enveloppe convexe + réponse de Harris)")
 
     if len(coins_finaux) < NB_COINS:
         print(f"⚠ Seulement {len(coins_finaux)} coin(s) trouvé(s) sur {NB_COINS} attendus pour "
@@ -867,7 +586,8 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
 
 if __name__ == "__main__":
     # Charge automatiquement toutes les pièces du dossier elodie/puzzle1/,
-    # nommées 1_1.jpg, 1_2.jpg, ..., 1_12.jpg.
+    # nommées 1_1.jpg, 1_2.jpg, ..., 1_12.jpg, et génère la figure de
+    # vérification de chacune dans puzzle1/verification/.
     DOSSIER_SCRIPT = os.path.dirname(os.path.abspath(__file__))
     DOSSIER_PUZZLE = os.path.join(DOSSIER_SCRIPT, "puzzle1")
     DOSSIER_VERIFICATION = os.path.join(DOSSIER_PUZZLE, "verification")
@@ -887,4 +607,4 @@ if __name__ == "__main__":
             continue
         pieces[nom] = resultat
 
-    proposer_puzzle(pieces, marge=5.0)
+    print(f"\n{len(pieces)}/{NB_PIECES} pièces analysées avec succès : {sorted(pieces.keys())}")
