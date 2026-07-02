@@ -206,7 +206,7 @@ def predict_mask(model, device, image_path):
 
 # EXÉCUTION RÉELLE (Liaison IA -> Mathématiques -> Données)
 if __name__ == "__main__":
-    from inference_hackathon import load_trained_model, predict_mask, refine_corners_with_math
+    from inference_hackton_affichage import load_trained_model, predict_mask, refine_corners_with_math
     from geometry_utils import extract_and_normalize_edges
     from optimisation_bspline import fit_spline_to_segment
     import os
