@@ -1,0 +1,9 @@
+Bibliothèques Python :
+    - numpy
+    - scipy
+    - skimage
+    - cv2
+    - torch
+    - matplotlib 
+    - time
+    - dataclasses
