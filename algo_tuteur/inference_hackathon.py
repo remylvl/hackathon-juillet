@@ -6,8 +6,6 @@ import matplotlib.pyplot as plt
 # Import de l'architecture du modèle
 # (Assure-toi que train_unet.py est dans le même dossier)
 from train_unet import PuzzleUNet 
-import cv2
-import numpy as np
 
 def extract_and_normalize_edges(mask: np.ndarray, corners: np.ndarray) -> list:
     """
