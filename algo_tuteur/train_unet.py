@@ -5,6 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import cv2
 import time
+import random
 
 # Import de ta logique métier géométrique
 from jigsaw5 import perturb_params, default_params, make_piece_from_params #[cite: 1]
@@ -138,17 +139,37 @@ class PuzzleDataset(Dataset):
             
             if self.rng.random() > 0.5:
                 noisy_img = cv2.GaussianBlur(noisy_img, (3, 3), 0)
-
-            # 5. Formatage final des Tenseurs
-            # X : L'image bruitée (1 canal)
-            X_tensor = torch.from_numpy(np.expand_dims(noisy_img, axis=0))
             
-            # Y : On empile le masque et la carte de chaleur (2 canaux)
-            # Résultat : Shape de (2, 128, 128)
+            # On choisit un angle de rotation totalement aléatoire entre -180° et +180°
+            angle_aleatoire = self.rng.uniform(-180, 180)
+            centre = (self.img_size // 2, self.img_size // 2)
+            
+            # Matrice de rotation
+            zoom_aleatoire = self.rng.uniform(0.6, 0.85)
+
+            M = cv2.getRotationMatrix2D(centre, angle_aleatoire, scale=zoom_aleatoire)
+            
+            # On fait pivoter les 3 matrices EXACTEMENT du même angle
+            # 1. L'image bruitée (le fond est rempli avec la couleur de fond bg_color)
+            noisy_img = cv2.warpAffine(noisy_img, M, (self.img_size, self.img_size), 
+                                    flags=cv2.INTER_LINEAR, borderValue=float(bg_color))
+            
+            # 2. Le masque (Interpolation 'Nearest' obligatoire pour garder du binaire pur)
+            mask = cv2.warpAffine(mask, M, (self.img_size, self.img_size), 
+                                flags=cv2.INTER_NEAREST, borderValue=0.0)
+            
+            # 3. La Heatmap des coins (Les taches lumineuses tournent avec la pièce)
+            heatmap_total = cv2.warpAffine(heatmap_total, M, (self.img_size, self.img_size), 
+                                        flags=cv2.INTER_LINEAR, borderValue=0.0)
+            # ==========================================
+
+            # 5. Formatage final des Tenseurs (Ton code existant)
+            X_tensor = torch.from_numpy(np.expand_dims(noisy_img, axis=0))
             Y_stacked = np.stack([mask, heatmap_total], axis=0)
             Y_tensor = torch.from_numpy(Y_stacked)
 
             return X_tensor, Y_tensor
+
 
     
 # ============================================================
@@ -193,7 +214,7 @@ def train_model():
 
     # Initialisation du modèle, de la perte (BCELoss) et de l'optimiseur (Adam)
     model = PuzzleUNet().to(device)
-    criterion = MultiTaskLoss(lambda_weight=15.0)
+    criterion = MultiTaskLoss(lambda_weight=40.0)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # Création du Dataset (10 000 images générées à la volée) et du DataLoader
