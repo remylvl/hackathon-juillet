@@ -463,63 +463,134 @@ def distance_cotes(ctrlA, ctrlB):
 
 def associer_pieces(dict_ctrl):
     cotes = []
-    for piece_id, cotes_piece in dict_ctrl.items():
-        for cote_id, info in enumerate(cotes_piece):
+    for pid, cotes_piece in dict_ctrl.items():
+        for cid, info in enumerate(cotes_piece):
             if info["cat"] != 0:
-                cotes.append((piece_id, cote_id))
+                cotes.append((pid, cid))
 
     distances = {}
     for (pA, cA) in cotes:
         for (pB, cB) in cotes:
-            if pA != pB:  # pièces différentes uniquement
+            if pA != pB:
                 catA = dict_ctrl[pA][cA]["cat"]
                 catB = dict_ctrl[pB][cB]["cat"]
-                if (catA == 1 and catB == 2) or (catA == 2 and catB == 1):
-                    ctrlA = dict_ctrl[pA][cA]["ctrl"]
-                    ctrlB = dict_ctrl[pB][cB]["ctrl"]
-                    distances[((pA, cA), (pB, cB))] = distance_cotes(ctrlA, ctrlB)
+                if (catA, catB) in [(1, 2), (2, 1)]:
+                    distances[((pA, cA), (pB, cB))] = distance_cotes(
+                        dict_ctrl[pA][cA]["ctrl"],
+                        dict_ctrl[pB][cB]["ctrl"]
+                    )
 
     associations = []
     associes = set()
 
-    # On commence par la pièce 0
-    cotes_piece0 = [(0, c) for c in range(len(dict_ctrl[0])) if dict_ctrl[0][c]["cat"] != 0]
-    if len(cotes_piece0) == 0:
-        print("La pièce 0 n'a aucun côté associable.")
-        return []
+    for (pA, cA) in cotes:
+        if (pA, cA) in associes:
+            continue
 
-    cote_actuel = cotes_piece0[0]
-
-    while True:
-        associes.add(cote_actuel)
         meilleur = None
         meilleure_dist = np.inf
 
         for (pB, cB) in cotes:
-            if (pB, cB) not in associes and pB != cote_actuel[0]:
-                key = (cote_actuel, (pB, cB))
-                if key in distances:
-                    d = distances[key]
-                    if d < meilleure_dist:
-                        meilleure_dist = d
-                        meilleur = (pB, cB)
+            if (pB, cB) in associes:
+                continue
+            if pA == pB:
+                continue
 
-        if meilleur is None:
-            break
+            key = ((pA, cA), (pB, cB))
+            if key in distances:
+                d = distances[key]
+                if d < meilleure_dist:
+                    meilleure_dist = d
+                    meilleur = (pB, cB)
 
-        associations.append((cote_actuel, meilleur))
-        cote_actuel = meilleur
-
-        if len(associes) == len(cotes):
-            break
+        if meilleur is not None:
+            associations.append(((pA, cA), meilleur))
+            associes.add((pA, cA))
+            associes.add(meilleur)
 
     return associations
+
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.interpolate import splev
+
+def afficher_resultats_piece(resultats, titre="Résultats pièce"):
+    """
+    Affiche une visualisation claire et compacte des résultats de reconnaissance_piece_vf :
+    - masque final
+    - contour + coins
+    - segments + splines
+    - segments normalisés
+    """
+
+    masque = resultats["masque_final"]
+    contour = resultats["contour_principal"]
+    coins = resultats["coins"]
+    segments = resultats["segments"]
+    splines = resultats["splines"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 12))
+    fig.suptitle(titre, fontsize=16, fontweight="bold")
+
+    # ------------------------------------------------------------
+    # 1. Masque final
+    # ------------------------------------------------------------
+    ax = axes[0, 0]
+    ax.imshow(masque, cmap="gray")
+    ax.set_title("1. Masque final")
+    ax.axis("off")
+
+    # ------------------------------------------------------------
+    # 2. Contour + coins
+    # ------------------------------------------------------------
+    ax = axes[0, 1]
+    ax.plot(contour[:, 1], contour[:, 0], '.', markersize=1, color="gray", alpha=0.5)
+    if len(coins) > 0:
+        ax.scatter(coins[:, 1], coins[:, 0], color="red", s=80, label="Coins détectés")
+    ax.invert_yaxis()
+    ax.set_aspect("equal")
+    ax.set_title("2. Contour + coins")
+    ax.legend()
+
+    # ------------------------------------------------------------
+    # 3. Segments + splines
+    # ------------------------------------------------------------
+    couleurs = ["red", "blue", "green", "orange", "purple", "brown"]
+    ax = axes[1, 0]
+    for i, (seg, tck) in enumerate(zip(segments, splines)):
+        col = couleurs[i % len(couleurs)]
+        ax.plot(seg[:, 1], seg[:, 0], '.', markersize=2, color=col, alpha=0.4)
+        u = np.linspace(0, 1, 200)
+        x_fit, y_fit = splev(u, tck)
+        ax.plot(x_fit, y_fit, '-', linewidth=2, color=col, label=f"Côté {i}")
+    ax.invert_yaxis()
+    ax.set_aspect("equal")
+    ax.set_title("3. Segments + splines")
+    ax.legend(fontsize=8)
+
+    # ------------------------------------------------------------
+    # 4. Segments normalisés
+    # ------------------------------------------------------------
+    ax = axes[1, 1]
+    for i, seg in enumerate(segments):
+        col = couleurs[i % len(couleurs)]
+        seg_norm = normaliser_segment(seg)
+        ax.plot(seg_norm[:, 0], seg_norm[:, 1], color=col, label=f"Côté {i}")
+    ax.axhline(0, color="black", linestyle="--", linewidth=1)
+    ax.set_aspect("equal")
+    ax.set_title("4. Segments normalisés")
+    ax.legend(fontsize=8)
+
+    plt.tight_layout()
+    plt.show()
 
 
 # ----------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------
-
+'''
 if __name__ == "__main__":
     dossier = "./resources/"   # dossier contenant plusieurs images
     dict_ctrl = construire_dict_ctrl_pour_plusieurs_pieces(dossier)
@@ -535,4 +606,121 @@ if __name__ == "__main__":
     print("\n=== Associations trouvées ===")
     for a in associations:
         print(a)
+'''
+import matplotlib.pyplot as plt
+import numpy as np
 
+def visualiser_schema_pieces(dict_ctrl, associations):
+    """
+    Visualisation schématique des pièces et de leurs côtés associés.
+    Chaque pièce est représentée par un carré.
+    Chaque côté est une ligne droite.
+    Les associations sont tracées par des segments reliant les côtés.
+    """
+
+    n_pieces = len(dict_ctrl)
+
+    # Placement radial des pièces autour de la pièce 0
+    angle_step = 2 * np.pi / max(1, n_pieces)
+    radius = 5
+
+    positions = {}
+    for pid in range(n_pieces):
+        angle = pid * angle_step
+        x = radius * np.cos(angle)
+        y = radius * np.sin(angle)
+        positions[pid] = (x, y)
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_title("Schéma des pièces et de leurs associations")
+
+    # --- Dessin des pièces ---
+    for pid, (x, y) in positions.items():
+        # carré représentant la pièce
+        ax.add_patch(plt.Rectangle((x - 1, y - 1), 2, 2,
+                                   fill=False, linewidth=2))
+        ax.text(x, y, f"Pièce {pid}", ha="center", va="center", fontsize=12)
+
+        # côtés : haut, droite, bas, gauche
+        cotes = [
+            ((x - 1, y + 1), (x + 1, y + 1)),  # haut
+            ((x + 1, y + 1), (x + 1, y - 1)),  # droite
+            ((x - 1, y - 1), (x + 1, y - 1)),  # bas
+            ((x - 1, y + 1), (x - 1, y - 1)),  # gauche
+        ]
+
+        # stocker les positions des côtés
+        dict_ctrl[pid].append({"schema_cotes": cotes})
+
+        # dessiner les côtés
+        for i, (p1, p2) in enumerate(cotes):
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                    color="gray", linewidth=1)
+            # numéro du côté
+            cx = (p1[0] + p2[0]) / 2
+            cy = (p1[1] + p2[1]) / 2
+            ax.text(cx, cy, f"{i}", fontsize=8, color="gray")
+
+    # --- Dessin des associations ---
+    for (pA, cA), (pB, cB) in associations:
+        cotesA = dict_ctrl[pA][-1]["schema_cotes"]
+        cotesB = dict_ctrl[pB][-1]["schema_cotes"]
+
+        p1A, p2A = cotesA[cA]
+        p1B, p2B = cotesB[cB]
+
+        # centre des côtés
+        cxA = (p1A[0] + p2A[0]) / 2
+        cyA = (p1A[1] + p2A[1]) / 2
+        cxB = (p1B[0] + p2B[0]) / 2
+        cyB = (p1B[1] + p2B[1]) / 2
+
+        # tracer la liaison
+        ax.plot([cxA, cxB], [cyA, cyB], "r--", linewidth=2)
+
+    ax.set_aspect("equal")
+    ax.axis("off")
+    plt.show()
+
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+
+if __name__ == "__main__":
+    dossier = "./resources/"   # dossier contenant plusieurs images
+
+    # 1. Analyse + affichage des résultats pour chaque image du dossier
+    fichiers = sorted(os.listdir(dossier))
+    for fichier in fichiers:
+        if fichier.lower().endswith((".png", ".jpg", ".jpeg")):
+            chemin = os.path.join(dossier, fichier)
+            print(f"\n--- Analyse de la pièce : {chemin} ---")
+
+            # Analyse de la pièce (sans les vieux affichages intermédiaires)
+            resultats = analyser_piece(chemin, afficher=False)
+
+            # Affichage amélioré avec la fonction afficher_resultats_piece
+            afficher_resultats_piece(resultats, titre=f"Résultats : {fichier}")
+
+    # 2. Construction de dict_ctrl pour toutes les pièces du dossier
+    dict_ctrl = construire_dict_ctrl_pour_plusieurs_pieces(dossier)
+
+    print("\n=== dict_ctrl construit pour toutes les pièces ===")
+    for piece_id, cotes_piece in dict_ctrl.items():
+        print(f"\nPièce {piece_id}:")
+        for cote_id, info in enumerate(cotes_piece):
+            print(f"  Côté {cote_id} : catégorie = {info['cat']}")
+
+    # 3. Association des pièces
+    associations = associer_pieces(dict_ctrl)
+
+    print("\n=== Schéma des pièces et associations ===")
+    visualiser_schema_pieces(dict_ctrl, associations)
+
+
+
+    print("\n=== Associations trouvées ===")
+    for a in associations:
+        print(a)
+
+    
