@@ -7,7 +7,7 @@ from skimage import measure
 from skimage.color import rgb2hsv
 
 
-fichier_image = "./resources/piece4.jpeg"
+fichier_image = "puzzle1/1_1.jpg"
 img = image.imread(fichier_image)
 img_hsv = rgb2hsv(img[:, :, :3])  # garde seulement RGB si l'image a un canal alpha
 #plt.imshow(img)
