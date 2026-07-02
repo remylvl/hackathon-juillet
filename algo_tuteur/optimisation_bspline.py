@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import BSpline
 from scipy.optimize import least_squares
 
-def fit_spline_to_segment(Q, degree=2, n_ctrl=9):
+def fit_spline_to_segment(Q, degree=2, n_ctrl=12):
     """
     Ajuste une B-spline avec paramétrisation par longueur d'arc (Chordal)
     et verrouillage strict des extrémités à (0,0) et (1,0).
@@ -68,9 +68,6 @@ def fit_spline_to_segment(Q, degree=2, n_ctrl=9):
 
 
 # ============================================================
-# EXÉCUTION (Simulation avec notre Pipeline)
-# ============================================================
-# ============================================================
 # EXÉCUTION RÉELLE (Liaison IA -> Mathématiques)
 # ============================================================
 if __name__ == "__main__":
@@ -79,7 +76,7 @@ if __name__ == "__main__":
     from geometry_utils import extract_and_normalize_edges
 
     print("1. Chargement de l'IA...")
-    unet_model, device = load_trained_model("unet_puzzle_weights.pth")
+    unet_model, device = load_trained_model("algo_tuteur/unet_puzzle_weights.pth")
     
     print("2. Prédiction sur la photo...")
     # Remplace par le nom de ta vraie image scannée/photographiée

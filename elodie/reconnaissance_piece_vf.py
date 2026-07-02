@@ -221,9 +221,9 @@ def ajuster_spline_segment(segment, lissage=0):
 
 def normaliser_segment(segment):
     """Exprime un segment dans un repère où le premier coin est l'origine
-    et l'axe (along) relie les deux coins du segment. `height` mesure
-    l'écart perpendiculaire à cet axe (utile pour comparer la forme des
-    côtés indépendamment de leur position/orientation)."""
+    et l'axe (along) relie les deux coins du segment. Les deux coordonnées
+    sont normalisées par la longueur du côté, ce qui rend les segments
+    comparables entre eux sans amplifier artificiellement les côtés plats."""
     x = segment[:, 1].astype(float)
     y = segment[:, 0].astype(float)
 
@@ -239,6 +239,10 @@ def normaliser_segment(segment):
 
     along = px * vx + py * vy
     height = px * vy - py * vx
+
+    if longueur > 0:
+        along = along / longueur
+        height = height / longueur
 
     return np.column_stack([along, height])
 
@@ -489,7 +493,6 @@ def afficher_segments_normalises(segments):
         plt.plot(seg_norm[:, 0], seg_norm[:, 1], label=f"Segment {i}")
     plt.axhline(0, color='black', linewidth=0.8, linestyle='--')
     plt.legend()
-    plt.axis("equal")
     plt.title("Segments normalisés (repère coin-à-coin)")
     plt.show()
 
@@ -540,11 +543,13 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, afficher=AFFICHER_GRAPHIQUES):
         afficher_splines(segments, splines)
         afficher_segments_normalises(segments)
 
+    segments_norm = [normaliser_segment(seg) for seg in segments]
+
     return {
         "masque_final": masque_final,
         "contour_principal": contour_principal,
         "coins": coins_finaux,
-        "segments": segments,
+        "segments": segments_norm,
         "splines": splines,
     }
 
