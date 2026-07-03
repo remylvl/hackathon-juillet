@@ -87,7 +87,8 @@ class PuzzleUNet(nn.Module):
 # 2) Le Générateur de Données (PyTorch Dataset)
 # ============================================================
 class PuzzleDataset(Dataset):
-    def __init__(self, num_samples=1000, img_size=64):
+    def __init__(self, num_samples=1000, img_size=512, rotation=True): 
+        self.rotation = rotation
         self.num_samples = num_samples
         self.img_size = img_size
         self.rng = np.random.default_rng()
@@ -141,7 +142,10 @@ class PuzzleDataset(Dataset):
                 noisy_img = cv2.GaussianBlur(noisy_img, (3, 3), 0)
             
             # On choisit un angle de rotation totalement aléatoire entre -180° et +180°
-            angle_aleatoire = self.rng.uniform(-180, 180)
+            if self.rotation:
+                angle_aleatoire = self.rng.uniform(-180,180)
+            else:
+                angle_aleatoire = 0
             centre = (self.img_size // 2, self.img_size // 2)
             
             # Matrice de rotation
