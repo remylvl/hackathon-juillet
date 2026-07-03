@@ -25,7 +25,7 @@ from skimage.color import rgb2hsv
 # Configuration
 # ----------------------------------------------------------------------
 
-FICHIER_IMAGE = "./resources/Test_4_pieces_2.jpg"
+FICHIER_IMAGE = "./resources/n_pieces_ensembles/Test_4_pieces_2.jpg"
 AFFICHER_GRAPHIQUES = True  # passe à False pour désactiver tous les plt.show()
 
 # Paramètres de calibration du masque bleu
@@ -50,111 +50,21 @@ def charger_image(chemin):
     return img, img_hsv[:, :, 0], img_hsv[:, :, 1], img_hsv[:, :, 2]
 
 
-def _difference_hue(a, b):
-    """Distance circulaire entre deux teintes HSV."""
-    diff = np.abs(a - b)
-    return np.minimum(diff, 1.0 - diff)
-
-
-def evaluer_masque_candidat(masque):
-    """Nettoie un masque et lui attribue un score de qualité.
-
-    Le score favorise une grande composante connexe, compacte et non collée
-    aux bords de l'image.
-    """
-    masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
-    masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((20, 20)))
-
-    labels, nb = ndimage.label(masque_propre)
-    tailles = ndimage.sum(masque_propre, labels, range(1, nb + 1))
-    if len(tailles) == 0:
-        return None, -np.inf, 0, 0.0
-
-    plus_grande = np.argmax(tailles) + 1
-    masque_piece = labels == plus_grande
-    masque_final = ndimage.binary_fill_holes(masque_piece)
-
-    if not np.any(masque_final):
-        return None, -np.inf, 0, 0.0
-
-    lignes, colonnes = np.nonzero(masque_final)
-    hauteur, largeur = masque_final.shape
-    bbox_area = max((lignes.max() - lignes.min() + 1) * (colonnes.max() - colonnes.min() + 1), 1)
-    aire = int(masque_final.sum())
-    compactness = aire / bbox_area
-    touche_bord = (
-        lignes.min() == 0 or colonnes.min() == 0 or
-        lignes.max() == hauteur - 1 or colonnes.max() == largeur - 1
-    )
-
-    score = aire * compactness
-    if touche_bord:
-        score *= 0.75
-
-    return masque_final, score, aire, compactness
-
-
-def creer_masque_bleu(img_h, img_s, img_v, img_rgb=None, sat_min=SAT_MIN, val_min=VAL_MIN,
+def creer_masque_bleu(img_h, img_s, img_v, sat_min=SAT_MIN, val_min=VAL_MIN,
                        largeur_hue=LARGEUR_HUE):
     """Construit un masque binaire de la pièce en calibrant automatiquement
     la teinte dominante parmi les pixels suffisamment saturés."""
-    candidats = []
+    candidat = (img_s > sat_min) & (img_v > val_min)
+    if not np.any(candidat):
+        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.")
 
-    parametres_hsv = [
-        (sat_min, val_min, largeur_hue),
-        (0.15, 0.12, 0.08),
-        (0.10, 0.10, 0.10),
-    ]
+    h_candidats = img_h[candidat]
+    hist, bins = np.histogram(h_candidats, bins=60, range=(0.0, 1.0))
+    i_pic = np.argmax(hist)
+    h_centre = 0.5 * (bins[i_pic] + bins[i_pic + 1])
 
-    for sat, val, largeur in parametres_hsv:
-        candidat = (img_s > sat) & (img_v > val)
-        if not np.any(candidat):
-            continue
-
-        h_candidats = img_h[candidat]
-        poids = np.clip(img_s[candidat] * img_v[candidat], 1e-6, None)
-        hist, bins = np.histogram(h_candidats, bins=72, range=(0.0, 1.0), weights=poids)
-        i_pic = np.argmax(hist)
-        h_centre = 0.5 * (bins[i_pic] + bins[i_pic + 1])
-
-        masque = candidat & (_difference_hue(img_h, h_centre) <= largeur)
-        candidats.append((masque, h_centre))
-
-    if img_rgb is not None:
-        r = img_rgb[:, :, 0].astype(float)
-        g = img_rgb[:, :, 1].astype(float)
-        b = img_rgb[:, :, 2].astype(float)
-        dominance_bleue = b - np.maximum(r, g)
-        for quantile in (0.70, 0.75, 0.80):
-            seuil = float(np.quantile(dominance_bleue, quantile))
-            masque = dominance_bleue > seuil
-            candidats.append((masque, np.nan))
-
-    meilleur_masque = None
-    meilleur_score = -np.inf
-    meilleur_h_centre = np.nan
-
-    for masque, h_centre in candidats:
-        masque_final, score, aire, compactness = evaluer_masque_candidat(masque)
-        if masque_final is None:
-            continue
-        if score > meilleur_score:
-            meilleur_score = score
-            meilleur_masque = masque_final
-            meilleur_h_centre = h_centre
-
-    if meilleur_masque is None:
-        raise ValueError("Impossible de construire un masque robuste pour cette image.")
-
-    if np.isnan(meilleur_h_centre):
-        pixels_utiles = meilleur_masque & (img_s > 0.05)
-        if np.any(pixels_utiles):
-            h_candidats = img_h[pixels_utiles]
-            hist, bins = np.histogram(h_candidats, bins=72, range=(0.0, 1.0))
-            i_pic = np.argmax(hist)
-            meilleur_h_centre = 0.5 * (bins[i_pic] + bins[i_pic + 1])
-
-    return meilleur_masque, meilleur_h_centre
+    masque = candidat & (np.abs(img_h - h_centre) <= largeur_hue)
+    return masque, h_centre
 
 
 # ----------------------------------------------------------------------
@@ -262,17 +172,15 @@ def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS,
     scores = np.array([score_courbure(contour_pour_score, index, seuil) for index in points])
     ordre = np.argsort(scores)
 
-    distance_effective = min(
-        distance_min,
-        max(30, len(contour_pour_score) // max(2 * nb_coins, 1))
-    )
-
     selection = []
 
-    def ajouter_candidat(index, point, score, seuil_distance):
-        nonlocal selection
+    for pos in ordre:
+        index = int(points[pos])
+        point = contour[index]
+        score = float(scores[pos])
+
         proches = [k for k, item in enumerate(selection)
-                   if np.sqrt((item["point"][0] - point[0]) ** 2 + (item["point"][1] - point[1]) ** 2) < seuil_distance]
+                   if np.sqrt((item["point"][0] - point[0]) ** 2 + (item["point"][1] - point[1]) ** 2) < distance_min]
 
         if proches:
             k_pire = max(proches, key=lambda k: selection[k]["score"])
@@ -283,28 +191,6 @@ def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS,
         elif score < max(selection, key=lambda item: item["score"])["score"]:
             k_pire = max(range(len(selection)), key=lambda k: selection[k]["score"])
             selection[k_pire] = {"index": index, "point": point, "score": score}
-
-    for seuil_distance in (distance_effective, max(20, distance_effective // 2), 0):
-        selection = []
-        for pos in ordre:
-            index = int(points[pos])
-            point = contour[index]
-            score = float(scores[pos])
-            ajouter_candidat(index, point, score, seuil_distance)
-            if len(selection) == nb_coins:
-                break
-        if len(selection) == nb_coins:
-            break
-
-    if len(selection) < nb_coins:
-        deja = {item["index"] for item in selection}
-        for pos in ordre:
-            index = int(points[pos])
-            if index in deja:
-                continue
-            selection.append({"index": index, "point": contour[index], "score": float(scores[pos])})
-            if len(selection) == nb_coins:
-                break
 
     selection.sort(key=lambda item: item["index"])
     points_filtres = np.array([item["point"] for item in selection])
@@ -652,7 +538,7 @@ def afficher_segments_normalises(segments):
 def analyser_piece(fichier_image=FICHIER_IMAGE, afficher=AFFICHER_GRAPHIQUES):
     img, img_h, img_s, img_v = charger_image(fichier_image)
 
-    masque, h_centre = creer_masque_bleu(img_h, img_s, img_v, img_rgb=img[:, :, :3])
+    masque, h_centre = creer_masque_bleu(img_h, img_s, img_v)
     print(f"Teinte bleue détectée automatiquement : {h_centre:.3f}")
 
     masque_final = nettoyer_masque(masque)
