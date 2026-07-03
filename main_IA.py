@@ -261,7 +261,7 @@ def analyser_dossier_photos(dossier_photos, model_path="unet_puzzle_weights.pth"
 
 
 if __name__ == "__main__":
-    DOSSIER_TEST = "resources/4_pieces_ensembles" 
+    DOSSIER_TEST = "resources/n_pieces_ensembles" 
     
     if not os.path.exists(DOSSIER_TEST):
         print(f"Création du dossier '{DOSSIER_TEST}'. Mets tes 4 photos dedans et relance le script !")
