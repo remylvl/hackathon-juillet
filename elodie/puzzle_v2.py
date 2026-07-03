@@ -24,11 +24,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import image
 from scipy import ndimage
-from scipy.spatial import ConvexHull
+from scipy.signal import find_peaks
 from scipy.interpolate import splprep, splev
 from skimage import measure
 from skimage.color import rgb2hsv
-from skimage.feature import corner_harris
 
 try:
     import cv2
@@ -281,56 +280,87 @@ def detecter_coins_par_courbure(contour, nb_coins=NB_COINS, pas_echantillonnage=
     return coins, indices_coins
 
 
-def detecter_coins_harris_convexe(masque_final, contour, nb_coins=NB_COINS,
-                                   fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
-                                   sigma_harris=2, nb_tentatives_max=6):
-    """Détecte les coins d'une pièce en combinant deux critères robustes,
-    bien plus fiables qu'un simple score de courbure le long du contour :
+def candidats_convexes(contour, fraction_fenetre=0.02, angle_min=10, fraction_distance=0.03):
+    """Repère les points CONVEXES du contour (virage net vers l'extérieur) :
+    à la fois les 4 vrais coins ET les pics de chaque tenon. On calcule
+    l'angle de virage en chaque point (vecteurs vers un voisin avant/après à
+    `fraction_fenetre` du périmètre), puis on garde les pics locaux de cet
+    angle (au-delà de `angle_min` degrés, espacés d'au moins
+    `fraction_distance` du périmètre pour éviter les doublons d'un même pic).
 
-    1. Seuls les points de l'ENVELOPPE CONVEXE du contour sont candidats.
-       Ça élimine d'office les points concaves (le cou d'un tenon, le fond
-       d'une encoche), qui n'ont géométriquement rien à voir avec un coin
-       de pièce, mais qui peuvent avoir un score de courbure très élevé et
-       tromper une détection purement locale.
-
-    2. Parmi ces candidats, on garde ceux à plus forte réponse de HARRIS
-       (`skimage.feature.corner_harris`), qui détecte une vraie structure
-       de coin (deux bords ~droits qui se croisent à angle vif) et répond
-       beaucoup plus faiblement à une bosse arrondie de tenon — sur nos
-       pièces, l'écart observé est net (score ~2.5-3.3 sur un vrai coin,
-       ~0.1-0.2 sur le pic d'un tenon).
-
-    IMPORTANT : `contour` doit être le contour BRUT (celui renvoyé par
-    `extraire_contour_principal`, PAS `lisser_contour`) : le lissage gaussien
-    en mode 'wrap' introduit du bruit numérique qui fait exploser le nombre
-    de points jugés "convexes" (observé : 237 points au lieu d'une trentaine
-    sur une pièce test), ce qui rend le filtre inutile.
-
-    Renvoie (coins, indices_coins_tries), au même format que
-    `detecter_coins_par_courbure` : `coins` en (row, col), et
-    `indices_coins_tries` triés dans l'ordre du contour.
+    Contrairement à l'enveloppe convexe globale, ceci capture aussi un
+    tenon/coin moins "extrême" que ses voisins (donc absent de l'enveloppe
+    convexe), du moment qu'il constitue un virage net localement.
     """
     n = len(contour)
-    pts_xy = contour[:, ::-1]  # (x, y)
-    hull = ConvexHull(pts_xy)
+    fenetre = max(5, int(n * fraction_fenetre))
+    angles = np.zeros(n)
+    for i in range(n):
+        p = contour[i]
+        a = contour[(i - fenetre) % n]
+        b = contour[(i + fenetre) % n]
+        v1, v2 = p - a, b - p
+        angles[i] = np.degrees(np.arctan2(v1[0] * v2[1] - v1[1] * v2[0], np.dot(v1, v2)))
 
-    reponse = corner_harris(masque_final.astype(float), sigma=sigma_harris)
-    h_max, l_max = reponse.shape
+    # le signe positif correspond aux points CONCAVES avec cette convention ;
+    # on cherche donc les creux de `angles`, d'où le signe "-" ci-dessous.
+    angles_bouclees = np.concatenate([angles, angles[:fenetre]])
+    pics, _ = find_peaks(-angles_bouclees, height=angle_min,
+                          distance=max(5, int(n * fraction_distance)))
+    return sorted(pics[pics < n].tolist())
 
-    candidats = []
-    for i in hull.vertices:
-        x, y = pts_xy[i]
-        xi = int(np.clip(round(x), 0, l_max - 1))
-        yi = int(np.clip(round(y), 0, h_max - 1))
-        candidats.append((i, reponse[yi, xi]))
-    candidats.sort(key=lambda t: -t[1])
+
+def fraction_piece_locale(masque_final, y, x, rayon):
+    """Fraction de pixels appartenant à la pièce (vs fond) dans un disque de
+    rayon `rayon` centré en (x, y)."""
+    ymin, ymax = max(0, int(y - rayon)), min(masque_final.shape[0], int(y + rayon) + 1)
+    xmin, xmax = max(0, int(x - rayon)), min(masque_final.shape[1], int(x + rayon) + 1)
+    yy, xx = np.mgrid[ymin:ymax, xmin:xmax]
+    disque = (yy - y) ** 2 + (xx - x) ** 2 <= rayon ** 2
+    return masque_final[ymin:ymax, xmin:xmax][disque].mean()
+
+
+def detecter_coins_par_fraction_piece(masque_final, contour, nb_coins=NB_COINS,
+                                       rayon_fraction=0.015, rayon_min=10,
+                                       fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
+                                       nb_tentatives_max=6):
+    """Détecte les coins d'une pièce à partir d'une idée géométrique simple
+    et robuste : EN UN VRAI COIN À 90°, LE FOND (BLANC) OCCUPE ENVIRON 1/4
+    DU VOISINAGE LOCAL DE LA PIÈCE ; AU BOUT D'UN TENON (fine presqu'île),
+    LE FOND OCCUPE BEAUCOUP PLUS (souvent plus de la moitié).
+
+    Contrairement à un score de courbure ou une réponse de Harris (qui
+    peuvent être ambigus quand un tenon a un virage aussi net qu'un vrai
+    coin, ou quand un vrai coin a un signal localement faible), cette
+    mesure est directement géométrique et globale : on regarde la
+    proportion de PIÈCE (pas de fond) dans un petit disque autour de
+    chaque candidat convexe (`candidats_convexes`). Le vrai coin a
+    toujours la plus petite fraction de pièce locale (~1/4 de disque plein,
+    contre pièce quasi majoritaire au bout d'un tenon) — ce critère s'est
+    montré net et stable sur toutes nos pièces test.
+
+    `rayon_fraction` : rayon du disque local, en fraction du périmètre du
+    contour (doit être assez grand pour dépasser la largeur du "cou" d'un
+    tenon, mais assez petit pour rester local à un seul coin).
+
+    Renvoie (coins, indices_coins_tries), au même format que
+    `detecter_coins_harris_convexe`.
+    """
+    n = len(contour)
+    rayon = max(rayon_min, n * rayon_fraction)
+    candidats = candidats_convexes(contour)
+
+    scores = []
+    for i in candidats:
+        y, x = contour[i]
+        scores.append((i, fraction_piece_locale(masque_final, y, x, rayon)))
+    scores.sort(key=lambda t: t[1])  # fraction croissante : coins vifs d'abord
 
     distance_min = max(10, n * fraction_distance_min)
     coins_indices = []
-
     for tentative in range(nb_tentatives_max):
         coins_indices = []
-        for i, score in candidats:
+        for i, _ in scores:
             p = contour[i]
             trop_proche = any(
                 np.linalg.norm(contour[j] - p) < distance_min
@@ -344,13 +374,14 @@ def detecter_coins_harris_convexe(masque_final, contour, nb_coins=NB_COINS,
             break
         distance_min /= 1.3
     else:
-        print(f"⚠ Impossible d'atteindre {nb_coins} coins par Harris même en relâchant "
-              f"distance_min (obtenu : {len(coins_indices)}).")
+        print(f"⚠ Impossible d'atteindre {nb_coins} coins (obtenu : {len(coins_indices)}).")
 
     coins_indices = np.array(sorted(coins_indices))
     coins = contour[coins_indices] if len(coins_indices) > 0 else np.array([])
 
     return coins, coins_indices
+
+
 
 
 # ----------------------------------------------------------------------
@@ -521,25 +552,44 @@ def verifier_piece_visuellement(img, masque_final, contour_principal, contour_li
 # Pipeline principal
 # ----------------------------------------------------------------------
 
+def trouver_indice_plus_proche(contour, point_xy):
+    """Indice du point du contour le plus proche d'un point (x, y) donné.
+    Sert à convertir un coin choisi "à la main" (coordonnées approximatives
+    lues sur la figure ou la photo) en indice exact sur le contour."""
+    x, y = point_xy
+    distances = np.sqrt((contour[:, 1] - x) ** 2 + (contour[:, 0] - y) ** 2)
+    return int(np.argmin(distances))
+
+
 def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
                     verifier=True, utiliser_grabcut=UTILISER_GRABCUT,
                     fraction_distance_min_coins=FRACTION_DISTANCE_MIN_COINS,
-                    sigma_harris=2):
+                    rayon_fraction_coins=0.015, coins_manuels=None):
     """Analyse une pièce et renvoie masque, contour, coins, segments et
     splines. Si `verifier=True`, enregistre (ou affiche, si
     `dossier_verification` est None) la figure récapitulative en 4 panneaux.
 
-    Les coins sont détectés par `detecter_coins_harris_convexe` : on ne
-    considère que les points de l'enveloppe convexe du contour (élimine les
-    creux d'encoches), puis on garde ceux à plus forte réponse de Harris
-    (`sigma_harris` en contrôle l'échelle) — voir la docstring de cette
-    fonction pour le détail.
+    Les coins sont détectés par `detecter_coins_par_fraction_piece` : parmi
+    les points convexes du contour (vrais coins ET pics de tenons), on
+    retient ceux où le fond (blanc) occupe la plus grande proportion du
+    voisinage local — un vrai coin à 90° a très peu de pièce autour de lui
+    comparé au bout arrondi d'un tenon. Voir la docstring de cette fonction
+    pour le détail et le raisonnement.
+
+    `rayon_fraction_coins` : rayon du disque local utilisé pour ce calcul,
+    en fraction du périmètre du contour.
 
     `fraction_distance_min_coins` : distance minimale entre deux coins
     retenus, en fraction du périmètre du contour. Une valeur plus PETITE
     autorise des coins plus proches les uns des autres (utile si deux vrais
     coins sont proches sur une pièce peu carrée) ; plus GRANDE force les
     coins à être mieux répartis.
+
+    `coins_manuels` : liste de 4 tuples (x, y) approximatifs pour forcer les
+    coins à la main plutôt que de les détecter automatiquement — filet de
+    sécurité pour un cas où même cette méthode se tromperait. Chaque point
+    donné est recalé sur le point du contour le plus proche via
+    `trouver_indice_plus_proche`.
     """
     nom_fichier = os.path.basename(fichier_image)
 
@@ -551,12 +601,19 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
     contour_principal = extraire_contour_principal(masque_final)
     contour_lisse = lisser_contour(contour_principal, sigma=7)
 
-    coins_finaux, indices_coins = detecter_coins_harris_convexe(
-        masque_final, contour_principal, nb_coins=NB_COINS,
-        fraction_distance_min=fraction_distance_min_coins,
-        sigma_harris=sigma_harris,
-    )
-    print(f"{len(coins_finaux)} coins retenus (enveloppe convexe + réponse de Harris)")
+    if coins_manuels is not None:
+        indices_coins = np.array(sorted(
+            trouver_indice_plus_proche(contour_principal, p) for p in coins_manuels
+        ))
+        coins_finaux = contour_principal[indices_coins]
+        print(f"{len(coins_finaux)} coins imposés manuellement")
+    else:
+        coins_finaux, indices_coins = detecter_coins_par_fraction_piece(
+            masque_final, contour_principal, nb_coins=NB_COINS,
+            rayon_fraction=rayon_fraction_coins,
+            fraction_distance_min=fraction_distance_min_coins,
+        )
+        print(f"{len(coins_finaux)} coins retenus (fraction de pièce locale)")
 
     if len(coins_finaux) < NB_COINS:
         print(f"⚠ Seulement {len(coins_finaux)} coin(s) trouvé(s) sur {NB_COINS} attendus pour "
@@ -593,6 +650,12 @@ if __name__ == "__main__":
     DOSSIER_VERIFICATION = os.path.join(DOSSIER_PUZZLE, "verification")
     NB_PIECES = 12
 
+    # Filet de sécurité optionnel : si jamais une pièce fait exception à la
+    # détection automatique (`detecter_coins_par_fraction_piece`), ajouter
+    # ici son nom -> 4 coins (x, y) approximatifs. Vide par défaut : la
+    # détection automatique doit suffire pour toutes les pièces normales.
+    CORRECTIONS_MANUELLES = {}
+
     pieces = {}
     for i in range(1, NB_PIECES + 1):
         nom = f"1_{i}"
@@ -601,7 +664,10 @@ if __name__ == "__main__":
             print(f"⚠ Fichier introuvable, ignoré : {chemin}")
             continue
         print(f"--- Analyse de {nom} ---")
-        resultat = analyser_piece(chemin, dossier_verification=DOSSIER_VERIFICATION)
+        resultat = analyser_piece(
+            chemin, dossier_verification=DOSSIER_VERIFICATION,
+            coins_manuels=CORRECTIONS_MANUELLES.get(nom),
+        )
         if len(resultat["segments"]) != NB_COINS:
             print(f"⚠ {nom} ignorée : {len(resultat['segments'])} côté(s) détecté(s) au lieu de {NB_COINS}.")
             continue
