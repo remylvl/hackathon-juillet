@@ -3,3 +3,4 @@
 .conda
 __pycache__
 *.pyc
+detect_coins_vision_par_ordi/puzzle1/verification/
