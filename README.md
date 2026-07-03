@@ -56,3 +56,29 @@ La ligne bleue : La courbe B-spline finale lissée et reconstruite.
 
 3. Logs Console
 Le terminal affiche la progression étape par étape (Chargement IA, Traitement, Normalisation, Optimisation) et confirme la dimension des arrays stockés dans le dictionnaire final.
+
+
+
+# Puzzle Solver — README POUR main_vision_par_ordi.py
+
+
+
+## Utilisation
+
+Placer les photos de pièces (fond uni, le mieux c'est de les scanner à l'imprimante) dans detect_coins_vision_par_ordi/puzzle1/, nommées 1_1.jpg, 1_2.jpg, ... (le nombre réel de photos est détecté automatiquement, pas besoin d'en avoir exactement 12).
+Si besoin, opencv-python doit être installé pour activer GrabCut (pip install opencv-python) — sinon le script se rabat automatiquement sur le masque HSV brut.
+Si besoin en tête de fichier, on peut modifier :
+
+DOSSIER_PUZZLE emplacement du dossier contenant les photos
+UTILISER_GRABCUT False pour désactiver GrabCut même si opencv-python est installé
+SAT_MIN  VAL_MIN  LARGEUR_HUE  calibration du masque de couleur
+FRACTION_DISTANCE_MIN_COINS  SIGMA_HARRIS  réglage de la détection des coins
+N_CTRL  DEGRE_SPLINE  SEUIL_PLAT  réglage de l'optimisation B-spline et de la classification bosse/creux/plat
+
+
+## Sortie
+
+Résultats imprimés en console (coins détectés, segments, pièces ignorées si détection incomplète, catégories de côtés, associations trouvées).
+Une figure de vérification par pièce (masque, contour+coins, segments+spline, côtés normalisés) enregistrée en PNG dans detect_coins_vision_par_ordi/puzzle1/verification/.
+associations : liste de tuples ((piece_A, côté_A), (piece_B, côté_B)), calculée par l'algorithme hongrois (optimal globalement, contrairement à un appariement glouton).
+Fenêtres matplotlib : schéma abstrait des pièces et de leurs associations, puis assemblage géométrique réel (les pièces sont affichées avec leurs vraies photos, tournées et translatées pour que les côtés associés coïncident bord à bord). <= ca ne marche pas vraiment...
