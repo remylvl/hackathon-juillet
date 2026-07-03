@@ -83,7 +83,7 @@ def extract_and_normalize_edges(mask: np.ndarray, corners: np.ndarray) -> list:
 
     return normalized_segments
 
-def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 15) -> np.ndarray:
+def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> np.ndarray:
     """
     Extrait les coordonnées (x, y) des 4 coins à partir de la prédiction du réseau.
     Utilise une approche d'effacement pour garantir des coins distincts.
@@ -186,7 +186,7 @@ def predict_mask(model, device, image_path):
     final_cv2_mask = binary_mask * 255
     
     # On garde la fonction mathématique de raffinement pour le pixel près
-    corners = extract_four_corners(heatmap_corners, min_distance_pixels=15) # Ajuste à 60 si tu es repassé en 512
+    corners = extract_four_corners(heatmap_corners, min_distance_pixels=60) 
     corners = refine_corners_with_math(final_cv2_mask, corners)
     
     # CRITIQUE : on retourne la heatmap en plus
@@ -208,10 +208,10 @@ if __name__ == "__main__":
     dict_ctrl = {}
 
     print("1. Chargement de l'IA...")
-    unet_model, device = load_trained_model("algo_tuteur/unet_puzzle_weights.pth")
+    unet_model, device = load_trained_model("unet_puzzle_weights.pth")
     
     # 2. Définition de la pièce en cours de traitement
-    image_path = "algo_tuteur/photo_test_6.jpg"
+    image_path = "algo_tuteur/photo_test_5.jpg"
     
     # Astuce : Utiliser le nom du fichier sans l'extension comme ID de la pièce
     piece_id = os.path.splitext(os.path.basename(image_path))[0] 

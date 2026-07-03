@@ -7,7 +7,7 @@ import cv2
 # Import de l'architecture et du générateur créés précédemment
 from train_unet import PuzzleUNet, PuzzleDataset 
 
-def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 15) -> np.ndarray:
+def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> np.ndarray:
     """
     Extrait les coordonnées (x, y) des 4 coins à partir de la prédiction du réseau.
     Utilise une approche d'effacement pour garantir des coins distincts.
@@ -128,7 +128,7 @@ def visualize_predictions(dataset, model, num_samples=3):
 
             # --- Extraction des Coins (Ajusté pour 512x512) ---
             # On utilise un rayon de 60 pixels pour effacer les taches
-            corners = extract_four_corners(pred_heatmap_show, min_distance_pixels=60)
+            corners = extract_four_corners(pred_heatmap_show, min_distance_pixels=150)
 
             # --- Affichage ---
             axes[i, 0].imshow(img_show, cmap='gray', vmin=0, vmax=1)
