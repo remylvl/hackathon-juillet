@@ -83,9 +83,7 @@ def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> 
         _, _, _, max_loc = cv2.minMaxLoc(temp_heatmap)
         corners.append(max_loc)
         
-        # On efface (met à 0) un disque autour de ce pic pour forcer la
-        # prochaine recherche à trouver un coin différent, sinon minMaxLoc
-        # retomberait toujours sur le même maximum
+        # On efface (met à 0) un disque autour de ce pic pour forcer la prochaine recherche à trouver un coin différent, sinon minMaxLoc retomberait toujours sur le même maximum
         cv2.circle(temp_heatmap, max_loc, min_distance_pixels, 0.0, -1)
         
     return np.array(corners, dtype=np.int32)
@@ -93,7 +91,7 @@ def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> 
 
 def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray, radius: int = 40) -> np.ndarray:
     """
-    Raffine les coins prédits par l'IA en cherchant le point de courbure maximale 
+    Raffine les coins prédits par l'IA en cherchant le point de courbure maximale
     sur le contour dans un rayon donné autour de chaque prédiction.
     """
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)

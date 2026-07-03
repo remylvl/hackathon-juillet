@@ -103,7 +103,7 @@ def calculate_iou(pred_mask, true_mask, threshold=0.5):
     else:
         return intersection / union
 
-def evaluate_model(weights_path="unet_puzzle_weights.pth", num_test_samples=500):
+def evaluate_model(weights_path="reseau_de_neurones/unet_puzzle_weights.pth", num_test_samples=500):
         # Utilisation de la carte graphique si disponible, sinon processeur
     if torch.cuda.is_available():
         device = torch.device("cuda") # Pour Nvidia
