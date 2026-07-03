@@ -8,7 +8,7 @@ from scipy.interpolate import BSpline
 # IMPORTS DE VOS MODULES LOCAUX
 # =====================================================================
 try:
-    from inference_hackton_affichage import load_trained_model, predict_mask
+    from inference_hackathon import load_trained_model, predict_mask
     from geometry_utils import extract_and_normalize_edges
     from optimisation_bspline import fit_spline_to_segment
 except ImportError as e:

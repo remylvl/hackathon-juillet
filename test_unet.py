@@ -7,7 +7,7 @@ import cv2
 # Import de l'architecture et du générateur créés précédemment
 from train_unet import PuzzleUNet, PuzzleDataset 
 
-def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> np.ndarray:
+def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 120) -> np.ndarray:
     """
     Extrait les coordonnées (x, y) des 4 coins à partir de la prédiction du réseau.
     Utilise une approche d'effacement pour garantir des coins distincts.
@@ -31,6 +31,62 @@ def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> 
         cv2.circle(temp_heatmap, max_loc, min_distance_pixels, 0.0, -1)
         
     return np.array(corners, dtype=np.int32)
+
+
+def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray, radius: int = 40) -> np.ndarray:
+    """
+    Raffine les coins prédits par l'IA en cherchant le point de courbure maximale 
+    sur le contour dans un rayon donné autour de chaque prédiction.
+    """
+    # 1. Extraire le contour principal (le mask doit être en uint8, 0 ou 255)
+    mask_uint8 = (mask > 0.5).astype(np.uint8) * 255 if mask.max() <= 1.0 else mask.astype(np.uint8)
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    
+    if not contours:
+        return nn_corners
+        
+    contour = max(contours, key=cv2.contourArea).squeeze()
+    if len(contour.shape) < 2: # Sécurité si le contour est trop petit
+        return nn_corners
+        
+    N = len(contour)
+    refined_corners = []
+
+    for nn_c in nn_corners:
+        distances = np.linalg.norm(contour - nn_c, axis=1)
+        pts_in_radius_indices = np.where(distances <= radius)[0]
+
+        if len(pts_in_radius_indices) == 0:
+            refined_corners.append(nn_c)
+            continue
+
+        max_curvature = -1
+        best_corner = nn_c
+        step = max(5, N // 100) 
+
+        for idx in pts_in_radius_indices:
+            idx_prev = (idx - step) % N
+            idx_next = (idx + step) % N
+
+            p = contour[idx]
+            p_prev = contour[idx_prev]
+            p_next = contour[idx_next]
+
+            v1 = p_prev - p
+            v2 = p_next - p
+
+            norm1 = np.linalg.norm(v1)
+            norm2 = np.linalg.norm(v2)
+            
+            if norm1 > 0 and norm2 > 0:
+                cos_angle = np.dot(v1, v2) / (norm1 * norm2)
+                if cos_angle > max_curvature:
+                    max_curvature = cos_angle
+                    best_corner = p
+
+        refined_corners.append(best_corner)
+
+    return np.array(refined_corners, dtype=np.int32)
 
 def calculate_iou(pred_mask, true_mask, threshold=0.5):
     """ Calcule l'Intersection over Union pour un batch d'images. """
@@ -65,7 +121,7 @@ def evaluate_model(weights_path="unet_puzzle_weights.pth", num_test_samples=500)
     # 2. Création du Test Set 
     # CRITIQUE : On instancie une nouvelle graine (seed) aléatoire indirectement
     # pour s'assurer que les perturbations générées par 'perturb_params' sont inédites.
-    test_dataset = PuzzleDataset(num_samples=num_test_samples, img_size=512)
+    test_dataset = PuzzleDataset(num_samples=num_test_samples, img_size=512, rotation=False)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
     total_iou = 0.0
@@ -128,7 +184,7 @@ def visualize_predictions(dataset, model, num_samples=3):
 
             # --- Extraction des Coins (Ajusté pour 512x512) ---
             # On utilise un rayon de 60 pixels pour effacer les taches
-            corners = extract_four_corners(pred_heatmap_show, min_distance_pixels=150)
+            corners = extract_four_corners(pred_heatmap_show, min_distance_pixels=120)
 
             # --- Affichage ---
             axes[i, 0].imshow(img_show, cmap='gray', vmin=0, vmax=1)
