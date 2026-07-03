@@ -28,6 +28,7 @@ from skimage import measure
 from skimage.color import rgb2hsv
 import os
 import sys
+from pathlib import Path
 
 # ============================================================
 # Paramètres globaux
@@ -62,6 +63,18 @@ RATIO_SEUIL_COURBURE = 0.015     # fenêtre de courbure ≈ 1.5 % du périmètre
 RATIO_DISTANCE_MIN_COINS = 0.06  # distance mini entre coins ≈ 6 % du périmètre du contour
 SEUIL_COURBURE_MIN = 10
 DISTANCE_MIN_COINS_MIN = 20
+
+SIGMA_LISSAGE_CONTOUR = 10  # écart-type du filtre gaussien appliqué au contour brut
+RAYON_MINIMA_LOCAUX = 5     # demi-largeur de la fenêtre utilisée pour repérer les minima locaux de courbure
+
+# --- Dossier contenant les images des pièces à analyser ---
+# Construit à partir de l'emplacement de CE fichier (et non du dossier
+# courant depuis lequel on lance `python main.py`), pour éviter les
+# FileNotFoundError liés au dossier de travail : avec un chemin relatif
+# comme "./resources/...", ça ne marche que si on lance le script depuis le
+# bon dossier. Avec Path(__file__), ça marche depuis n'importe où.
+DOSSIER_SCRIPT = Path(__file__).resolve().parent
+DOSSIER_IMAGES = DOSSIER_SCRIPT / "resources" / "n_pieces_ensembles"
 
 
 # ============================================================
@@ -231,7 +244,18 @@ def score_courbure(contour, index, seuil):
     Calcule un score de courbure locale au point d'indice `index` du contour,
     en comparant les vecteurs vers les points situés `seuil` pas avant et
     `seuil` pas après (produit scalaire cumulé sur une fenêtre).
-    Plus la courbure est marquée (coin pointu), plus le score est élevé.
+
+    Attention au sens de lecture du score : sur un tronçon bien droit, les
+    vecteurs vers les deux voisins pointent dans des directions quasi
+    opposées, ce qui donne un produit scalaire très négatif et donc un score
+    (valeur absolue) ÉLEVÉ. À l'inverse, sur un coin bien marqué (angle
+    proche de 90°), les deux vecteurs sont quasi perpendiculaires, leur
+    produit scalaire est proche de 0, donc le score est FAIBLE.
+
+    → Un coin se traduit par un score bas, pas haut : ce sont les MINIMA de
+    cette fonction (le long du contour) qui correspondent aux coins, d'où
+    l'usage de `trouver_minima_locaux` ci-dessous plutôt qu'une simple
+    recherche de valeurs élevées.
     """
     n = len(contour)
     p = contour[index]
@@ -244,6 +268,33 @@ def score_courbure(contour, index, seuil):
             + (contour[i_gauche][1] - p[1]) * (contour[i_droite][1] - p[1])
         )
     return score
+
+
+def trouver_minima_locaux(scores, rayon=5):
+    """
+    Renvoie les indices des minima locaux d'une courbe 1D **cyclique**
+    (un contour est une boucle fermée, le premier et le dernier point
+    sont voisins).
+
+    Un point `i` est un minimum local si son score est le plus petit parmi
+    tous les points situés à `rayon` pas de lui de chaque côté (fenêtre
+    glissante de largeur `2*rayon + 1`, avec repliement circulaire).
+
+    Cette fonction remplace avantageusement `measure.approximate_polygon`
+    comme source de candidats-coins : au lieu de dépendre d'une tolérance
+    de simplification de polygone (qui peut décaler ou carrément rater un
+    coin selon sa valeur), elle repère directement, de façon purement
+    géométrique, tous les creux locaux du score de courbure — c'est-à-dire
+    tous les points qui *pourraient* être des coins, y compris des coins
+    « secondaires » moins marqués que les 4 coins principaux.
+    """
+    n = len(scores)
+    minima = []
+    for i in range(n):
+        indices = [(i + k) % n for k in range(-rayon, rayon + 1)]
+        if scores[i] == np.min(scores[indices]):
+            minima.append(i)
+    return np.array(minima, dtype=int)
 
 
 def parametres_adaptatifs_coins(contour):
@@ -264,11 +315,34 @@ def parametres_adaptatifs_coins(contour):
     return seuil_courbure, distance_min_coins
 
 
-def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS):
+def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS, contour_score=None):
     """
-    Sélectionne les `nb_coins` points de plus forte courbure parmi une liste
-    de points candidats, en imposant une distance minimale entre eux
-    (pour éviter de choisir plusieurs points trop proches sur le même coin).
+    Sélectionne les `nb_coins` points de plus forte courbure (donc de score
+    le plus BAS, voir `score_courbure`) parmi une liste de points candidats,
+    en imposant une distance minimale entre eux (pour éviter de choisir
+    plusieurs points trop proches sur le même coin).
+
+    Version robuste (par rapport à un simple glouton "premier arrivé,
+    premier servi") :
+      - la sélection n'est pas strictement gloutonne : si un meilleur
+        candidat (score plus bas) apparaît près d'un point déjà retenu, il
+        peut le REMPLACER au lieu d'être rejeté (`ajouter_candidat`) ;
+      - si la distance minimale demandée est trop stricte pour trouver
+        `nb_coins` points distincts sur ce contour, on retente avec un seuil
+        de distance progressivement réduit (`distance_effective`, sa
+        moitié, puis 0), au lieu d'échouer avec moins de coins que prévu ;
+      - en tout dernier recours, on complète avec les meilleurs points
+        restants même s'ils sont proches d'un point déjà choisi, pour
+        garantir `nb_coins` coins en sortie.
+
+    Paramètres
+    ----------
+    contour : contour utilisé pour lire les COORDONNÉES des points retenus
+        (typiquement le contour lissé).
+    contour_score : contour utilisé pour CALCULER le score de courbure de
+        chaque candidat (généralement identique à `contour`, mais peut être
+        différent si l'on veut découpler les deux usages). Si None,
+        `contour` est utilisé pour les deux.
 
     Retourne :
         points_filtres : coordonnées (lignes, colonnes) des coins retenus
@@ -277,27 +351,69 @@ def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS):
     if len(points) == 0:
         return np.array([]), np.array([])
 
-    scores = [score_courbure(contour, index, seuil) for index in points]
-    ordre = np.argsort(scores)  # du score le plus faible au plus élevé
+    contour_pour_score = contour if contour_score is None else contour_score
+    scores = np.array([score_courbure(contour_pour_score, index, seuil) for index in points])
+    ordre = np.argsort(scores)  # du score le plus faible (coin marqué) au plus élevé (tout droit)
 
-    points_filtres = []
-    i_filtres = []
+    # On ne s'impose pas une distance minimale plus grande qu'un quart du
+    # périmètre par coin : sur un petit contour, une distance_min fixe
+    # pourrait sinon être irréaliste et empêcher de trouver nb_coins points.
+    distance_effective = min(
+        distance_min,
+        max(30, len(contour_pour_score) // max(2 * nb_coins, 1))
+    )
 
-    # On parcourt les candidats du plus courbé au moins courbé (ordre inversé via argsort + fin de liste)
-    for idx in ordre:
-        index = points[idx]
-        p = contour[index]
-        trop_proche = any(
-            np.sqrt((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2) < distance_min
-            for q in points_filtres
-        )
-        if not trop_proche:
-            points_filtres.append(p)
-            i_filtres.append(index)
-        if len(points_filtres) == nb_coins:
+    selection = []
+
+    def ajouter_candidat(index, point, score, seuil_distance):
+        """Ajoute un candidat, ou remplace le pire candidat voisin si ce
+        nouveau point est meilleur (score plus bas) et trop proche de lui."""
+        nonlocal selection
+        proches = [
+            k for k, item in enumerate(selection)
+            if np.sqrt((item["point"][0] - point[0]) ** 2 + (item["point"][1] - point[1]) ** 2) < seuil_distance
+        ]
+
+        if proches:
+            k_pire = max(proches, key=lambda k: selection[k]["score"])
+            if score < selection[k_pire]["score"]:
+                selection[k_pire] = {"index": index, "point": point, "score": score}
+        elif len(selection) < nb_coins:
+            selection.append({"index": index, "point": point, "score": score})
+        elif score < max(selection, key=lambda item: item["score"])["score"]:
+            k_pire = max(range(len(selection)), key=lambda k: selection[k]["score"])
+            selection[k_pire] = {"index": index, "point": point, "score": score}
+
+    # On retente avec une distance minimale de plus en plus permissive tant
+    # qu'on n'a pas réussi à réunir nb_coins points distincts.
+    for seuil_distance in (distance_effective, max(20, distance_effective // 2), 0):
+        selection = []
+        for pos in ordre:
+            index = int(points[pos])
+            point = contour[index]
+            score = float(scores[pos])
+            ajouter_candidat(index, point, score, seuil_distance)
+            if len(selection) == nb_coins:
+                break
+        if len(selection) == nb_coins:
             break
 
-    return np.array(points_filtres), np.array(i_filtres)
+    # Filet de sécurité final : si malgré tout on a moins de nb_coins points
+    # (candidats trop peu nombreux), on complète avec les meilleurs restants.
+    if len(selection) < nb_coins:
+        deja = {item["index"] for item in selection}
+        for pos in ordre:
+            index = int(points[pos])
+            if index in deja:
+                continue
+            selection.append({"index": index, "point": contour[index], "score": float(scores[pos])})
+            if len(selection) == nb_coins:
+                break
+
+    selection.sort(key=lambda item: item["index"])  # on remet dans l'ordre le long du contour
+    points_filtres = np.array([item["point"] for item in selection])
+    i_filtres = np.array([item["index"] for item in selection], dtype=int)
+    return points_filtres, i_filtres
 
 
 # ============================================================
@@ -464,42 +580,64 @@ def analyser_piece(fichier_image, afficher=AFFICHER_GRAPHIQUES):
     masque_final = nettoyer_masque(masque)
     _, X, Y = extraire_bord(masque_final)
 
-    # --- Contour principal, lissé, puis simplifié en polygone ---
-    contour_principal = extraire_contour_principal(masque_final)
-    contour_lisse = lisser_contour(contour_principal, sigma=7)
+    # --- Contour principal, puis LISSAGE ---
+    # Point important : le contour brut issu de measure.find_contours() suit
+    # le pourtour pixel par pixel, donc il est bruité (marches d'escalier,
+    # micro-aspérités). Calculer la courbure directement dessus produit des
+    # scores instables, qui peuvent faire "sauter" les coins détectés d'une
+    # image à l'autre. On lisse donc le contour AVANT tout calcul de courbure,
+    # et on travaille ensuite sur ce contour lissé pour TOUTES les étapes en
+    # aval (coins, segments, splines) — c'est ce contour lissé qui est
+    # renvoyé comme "contour_principal" dans le résultat.
+    contour_brut = extraire_contour_principal(masque_final)
+    contour_lisse = lisser_contour(contour_brut, sigma=SIGMA_LISSAGE_CONTOUR)
+
+    # Conservé uniquement à des fins d'affichage/diagnostic (voir plus bas) :
+    # ce n'est plus la source des candidats-coins (voir trouver_minima_locaux).
     contour_simplifie = measure.approximate_polygon(contour_lisse, tolerance=10)
 
     if afficher:
         afficher_contour_simplifie(X, Y, contour_simplifie)
 
     # --- Détection de coins Harris, utilisés comme candidats supplémentaires ---
-    # (avant, ces coins étaient calculés puis seulement affichés à titre indicatif :
-    # ils ne participaient jamais réellement à la sélection finale des coins.
-    # Ici, on les fusionne avec les points du polygone simplifié pour enrichir
-    # l'ensemble de candidats soumis au filtrage par courbure.)
     coins_harris = detecter_coins_harris(masque_final)
     print(f"{len(coins_harris)} coins détectés (Harris)")
-    indices_harris = [trouver_indice(contour_principal, c) for c in coins_harris]
+    indices_harris = [trouver_indice(contour_lisse, c) for c in coins_harris]
 
-    indices_points_polygone = [trouver_indice(contour_principal, p) for p in contour_simplifie]
+    # --- Candidats principaux : minima locaux du score de courbure, calculés
+    # sur TOUT le contour lissé (voir trouver_minima_locaux). Cette approche
+    # est plus fiable que measure.approximate_polygon : elle ne dépend pas
+    # d'une tolérance de simplification qui peut décaler ou rater un coin,
+    # et repère directement, point par point, les creux de courbure. ---
+    seuil_courbure, distance_min_coins = parametres_adaptatifs_coins(contour_lisse)
+    scores_courbure = np.array([
+        score_courbure(contour_lisse, i, seuil_courbure) for i in range(len(contour_lisse))
+    ])
+    indices_minima = trouver_minima_locaux(scores_courbure, rayon=RAYON_MINIMA_LOCAUX)
 
-    # Fusion des deux sources de candidats, sans doublons
-    indices_points = sorted(set(indices_points_polygone) | set(indices_harris))
+    # Filet de sécurité : si le lissage ou la géométrie de la pièce ne
+    # laissent émerger que très peu de minima locaux (< NB_COINS), on retombe
+    # sur l'ensemble de tous les points du contour comme candidats, pour ne
+    # jamais se retrouver sans assez de candidats à donner à max_courbure.
+    if len(indices_minima) < NB_COINS:
+        indices_minima = np.arange(len(contour_lisse), dtype=int)
+
+    # Fusion avec les coins Harris, sans doublons
+    indices_points = sorted(set(indices_minima.tolist()) | set(indices_harris))
 
     # --- Sélection finale des 4 coins par score de courbure ---
-    # Seuils calculés automatiquement à partir du périmètre du contour
-    # (voir parametres_adaptatifs_coins), plutôt que des constantes fixes
-    # calibrées pour une seule résolution d'image.
-    seuil_courbure, distance_min_coins = parametres_adaptatifs_coins(contour_principal)
     coins_finaux, indices_coins = max_courbure(
-        contour_principal, indices_points, seuil_courbure, distance_min_coins
+        contour_lisse, indices_points, seuil_courbure, distance_min_coins,
+        contour_score=contour_lisse
     )
     indices_coins = np.sort(indices_coins)  # on remet les indices dans l'ordre le long du contour
     print(f"{len(coins_finaux)} coins retenus après filtrage par courbure "
           f"(seuil_courbure={seuil_courbure}, distance_min_coins={distance_min_coins})")
 
     # --- Découpage en 4 segments (côtés) entre coins successifs ---
-    segments = extraire_segments(contour_principal, indices_coins)
+    # On découpe le contour LISSÉ (et non le contour brut) : les splines
+    # ajustées ensuite sur ces segments sont donc elles aussi plus régulières.
+    segments = extraire_segments(contour_lisse, indices_coins)
     for i, seg in enumerate(segments):
         print(f"Segment {i} : {len(seg)} points")
 
@@ -518,7 +656,7 @@ def analyser_piece(fichier_image, afficher=AFFICHER_GRAPHIQUES):
 
     return {
         "masque_final": masque_final,
-        "contour_principal": contour_principal,
+        "contour_principal": contour_lisse,
         "coins": coins_finaux,
         "segments": segments_norm,
         "splines": splines,
@@ -960,7 +1098,14 @@ def visualiser_schema_pieces(dict_ctrl, associations):
 # ============================================================
 
 if __name__ == "__main__":
-    dossier = "./resources/n_pieces_ensembles/"   # dossier contenant plusieurs images
+    dossier = DOSSIER_IMAGES  # ex: <dossier_du_script>/resources/n_pieces_ensemble
+
+    if not dossier.is_dir():
+        raise FileNotFoundError(
+            f"Dossier introuvable : {dossier}\n"
+            f"Crée ce dossier à côté de ce script et mets-y tes photos de pièces "
+            f"(.png/.jpg/.jpeg), ou modifie DOSSIER_IMAGES en haut du fichier."
+        )
 
     # 1. Analyse + affichage des résultats pour chaque image du dossier
     fichiers = sorted(os.listdir(dossier))
