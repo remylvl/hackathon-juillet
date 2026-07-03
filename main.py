@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib import image
 from scipy import ndimage
 from scipy.interpolate import splprep, splev, BSpline
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, linear_sum_assignment
 from skimage.feature import corner_harris, corner_peaks
 from skimage import measure
 from skimage.color import rgb2hsv
@@ -41,8 +41,27 @@ VAL_MIN = 0.20          # luminosité (value) minimale idem
 LARGEUR_HUE = 0.06      # demi-largeur de la fenêtre de teinte autour du pic détecté
 
 NB_COINS = 4            # une pièce de puzzle a 4 coins
-SEUIL_COURBURE = 50     # nombre de points voisins utilisés pour estimer la courbure locale
+
+# --- Anciens seuils fixes (en pixels), conservés uniquement comme valeurs de
+# repli si jamais on appelle max_courbure()/nettoyer_masque() en dehors du
+# pipeline principal, sans passer par le calcul adaptatif ci-dessous. ---
+SEUIL_COURBURE = 50       # nombre de points voisins utilisés pour estimer la courbure locale
 DISTANCE_MIN_COINS = 200  # distance minimale (en pixels) entre deux coins retenus
+
+# --- Ratios utilisés pour adapter automatiquement ces seuils à la résolution
+# réelle de chaque image (voir `parametres_adaptatifs_masque` et
+# `parametres_adaptatifs_coins` plus bas). Exprimés en proportion de la
+# taille de l'image / du périmètre du contour, ils évitent de re-calibrer
+# les constantes à la main à chaque changement de résolution de photo. ---
+RATIO_OUVERTURE_MASQUE = 0.003   # taille du noyau d'ouverture ≈ 0.3 % de la petite dimension
+RATIO_FERMETURE_MASQUE = 0.02    # taille du noyau de fermeture ≈ 2 % de la petite dimension
+TAILLE_OUVERTURE_MIN = 3
+TAILLE_FERMETURE_MIN = 5
+
+RATIO_SEUIL_COURBURE = 0.015     # fenêtre de courbure ≈ 1.5 % du périmètre du contour
+RATIO_DISTANCE_MIN_COINS = 0.06  # distance mini entre coins ≈ 6 % du périmètre du contour
+SEUIL_COURBURE_MIN = 10
+DISTANCE_MIN_COINS_MIN = 20
 
 
 # ============================================================
@@ -98,6 +117,21 @@ def creer_masque_bleu(img_h, img_s, img_v,
 # 2. Nettoyage du masque
 # ============================================================
 
+def parametres_adaptatifs_masque(masque):
+    """
+    Calcule les tailles de noyaux morphologiques (ouverture/fermeture) en
+    fonction de la résolution réelle de l'image, plutôt que d'utiliser des
+    tailles fixes en pixels (3x3 / 20x20) calibrées pour une seule résolution.
+
+    Sans cela, des photos prises à une résolution différente feraient soit
+    trop de nettoyage (perte de détails), soit pas assez (bruit résiduel).
+    """
+    dim_min = min(masque.shape)
+    taille_ouverture = max(TAILLE_OUVERTURE_MIN, int(round(dim_min * RATIO_OUVERTURE_MASQUE)))
+    taille_fermeture = max(TAILLE_FERMETURE_MIN, int(round(dim_min * RATIO_FERMETURE_MASQUE)))
+    return taille_ouverture, taille_fermeture
+
+
 def nettoyer_masque(masque):
     """
     Nettoie le masque brut pour ne garder qu'une seule pièce propre et pleine.
@@ -106,9 +140,15 @@ def nettoyer_masque(masque):
     - Fermeture morphologique : rebouche les petits trous/fentes dans le contour.
     - On garde uniquement la plus grande composante connexe (= la pièce).
     - On remplit les trous internes (ex : reflets qui cassaient la couleur).
+
+    Les tailles des noyaux morphologiques sont calculées automatiquement en
+    fonction de la résolution de l'image (voir `parametres_adaptatifs_masque`),
+    ce qui évite d'avoir à recalibrer des constantes fixes à chaque changement
+    de taille de photo.
     """
-    masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
-    masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((20, 20)))
+    taille_ouverture, taille_fermeture = parametres_adaptatifs_masque(masque)
+    masque_propre = ndimage.binary_opening(masque, structure=np.ones((taille_ouverture, taille_ouverture)))
+    masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((taille_fermeture, taille_fermeture)))
 
     # Étiquetage des composantes connexes du masque
     labels, nb = ndimage.label(masque_propre)
@@ -204,6 +244,24 @@ def score_courbure(contour, index, seuil):
             + (contour[i_gauche][1] - p[1]) * (contour[i_droite][1] - p[1])
         )
     return score
+
+
+def parametres_adaptatifs_coins(contour):
+    """
+    Calcule `seuil_courbure` et `distance_min_coins` proportionnellement au
+    périmètre du contour (nombre de points), plutôt que d'utiliser des
+    constantes fixes en pixels (SEUIL_COURBURE=50, DISTANCE_MIN_COINS=200).
+
+    Une image à plus haute résolution donne un contour avec beaucoup plus de
+    points : avec des seuils fixes, la fenêtre de courbure deviendrait trop
+    étroite (bruit) et la distance minimale entre coins trop petite (coins
+    dupliqués). En les exprimant en proportion du périmètre, la détection de
+    coins reste cohérente quelle que soit la résolution de la photo.
+    """
+    perimetre = len(contour)
+    seuil_courbure = max(SEUIL_COURBURE_MIN, int(round(perimetre * RATIO_SEUIL_COURBURE)))
+    distance_min_coins = max(DISTANCE_MIN_COINS_MIN, int(round(perimetre * RATIO_DISTANCE_MIN_COINS)))
+    return seuil_courbure, distance_min_coins
 
 
 def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS):
@@ -406,10 +464,6 @@ def analyser_piece(fichier_image, afficher=AFFICHER_GRAPHIQUES):
     masque_final = nettoyer_masque(masque)
     _, X, Y = extraire_bord(masque_final)
 
-    # --- Détection de coins (Harris, à titre indicatif) ---
-    coins_harris = detecter_coins_harris(masque_final)
-    print(f"{len(coins_harris)} coins détectés (Harris)")
-
     # --- Contour principal, lissé, puis simplifié en polygone ---
     contour_principal = extraire_contour_principal(masque_final)
     contour_lisse = lisser_contour(contour_principal, sigma=7)
@@ -418,17 +472,31 @@ def analyser_piece(fichier_image, afficher=AFFICHER_GRAPHIQUES):
     if afficher:
         afficher_contour_simplifie(X, Y, contour_simplifie)
 
-    # Position des coins Harris dans le contour (indicatif / debug)
-    indices_coins_harris = sorted(trouver_indice(contour_principal, c) for c in coins_harris)
-    print("Indices des coins (Harris) dans le contour :", indices_coins_harris)
+    # --- Détection de coins Harris, utilisés comme candidats supplémentaires ---
+    # (avant, ces coins étaient calculés puis seulement affichés à titre indicatif :
+    # ils ne participaient jamais réellement à la sélection finale des coins.
+    # Ici, on les fusionne avec les points du polygone simplifié pour enrichir
+    # l'ensemble de candidats soumis au filtrage par courbure.)
+    coins_harris = detecter_coins_harris(masque_final)
+    print(f"{len(coins_harris)} coins détectés (Harris)")
+    indices_harris = [trouver_indice(contour_principal, c) for c in coins_harris]
+
+    indices_points_polygone = [trouver_indice(contour_principal, p) for p in contour_simplifie]
+
+    # Fusion des deux sources de candidats, sans doublons
+    indices_points = sorted(set(indices_points_polygone) | set(indices_harris))
 
     # --- Sélection finale des 4 coins par score de courbure ---
-    indices_points = [trouver_indice(contour_principal, p) for p in contour_simplifie]
+    # Seuils calculés automatiquement à partir du périmètre du contour
+    # (voir parametres_adaptatifs_coins), plutôt que des constantes fixes
+    # calibrées pour une seule résolution d'image.
+    seuil_courbure, distance_min_coins = parametres_adaptatifs_coins(contour_principal)
     coins_finaux, indices_coins = max_courbure(
-        contour_principal, indices_points, SEUIL_COURBURE, DISTANCE_MIN_COINS
+        contour_principal, indices_points, seuil_courbure, distance_min_coins
     )
     indices_coins = np.sort(indices_coins)  # on remet les indices dans l'ordre le long du contour
-    print(f"{len(coins_finaux)} coins retenus après filtrage par courbure")
+    print(f"{len(coins_finaux)} coins retenus après filtrage par courbure "
+          f"(seuil_courbure={seuil_courbure}, distance_min_coins={distance_min_coins})")
 
     # --- Découpage en 4 segments (côtés) entre coins successifs ---
     segments = extraire_segments(contour_principal, indices_coins)
@@ -644,76 +712,102 @@ def construire_dict_ctrl(fichier_image):
 
 def distance_cotes(ctrlA, ctrlB):
     """
-    Mesure de dissemblance entre deux côtés, basée sur la distance
-    euclidienne entre leurs points de contrôle (mêmes indices).
-    Plus la distance est faible, plus les côtés sont "complémentaires".
+    Mesure de dissemblance entre deux côtés destinés à s'emboîter
+    (une bosse d'un côté, un creux de l'autre).
+
+    Avant de comparer, on remet ctrlB dans le même référentiel géométrique
+    que ctrlA :
+        - les deux côtés sont parcourus en sens opposés le long de leurs
+          contours respectifs (l'un dans le sens horaire, l'autre
+          anti-horaire une fois les deux pièces rapprochées) : on inverse
+          donc l'ordre des points de contrôle de B ("along" inversé).
+        - un creux qui s'emboîte parfaitement dans une bosse a une forme en
+          "négatif" : la hauteur (axe perpendiculaire au côté) doit être
+          inversée en signe pour que les deux profils se superposent.
+
+    Sans ces deux transformations, on comparait directement deux courbes
+    qui ne sont jamais alignées (même une paire parfaitement complémentaire
+    aurait une grande distance), ce qui faussait l'association des pièces.
+
+    Plus la distance obtenue est faible, plus les côtés sont complémentaires.
     """
-    return np.linalg.norm(ctrlA - ctrlB)
+    ctrlB_aligne = ctrlB[::-1].copy()      # on inverse le sens de parcours
+    ctrlB_aligne[:, 1] = -ctrlB_aligne[:, 1]  # on inverse le signe de la hauteur (effet miroir)
+    return np.linalg.norm(ctrlA - ctrlB_aligne)
+
+
+# Coût prohibitif utilisé pour empêcher une pièce de s'auto-associer
+# (une bosse et un creux appartenant à la même pièce). On ne peut pas
+# simplement "retirer" ces cases de la matrice de coût car
+# linear_sum_assignment exige une matrice rectangulaire complète : on les
+# rend donc juste extrêmement coûteuses pour qu'elles ne soient choisies
+# que si vraiment aucune autre option n'existe (et on les filtre après coup).
+PENALITE_MEME_PIECE = 1e6
 
 
 def associer_pieces(dict_ctrl):
     """
-    Tente d'associer, entre pièces différentes, les côtés complémentaires
-    (une bosse avec un creux) en minimisant la distance entre leurs formes.
+    Associe les côtés complémentaires (bosse <-> creux) entre pièces
+    différentes, en résolvant un problème d'affectation optimale globale
+    via l'algorithme hongrois (`scipy.optimize.linear_sum_assignment`).
 
-    Algorithme glouton :
-        - on ne considère que les côtés non plats (cat 1 = bosse, cat 2 = creux)
-        - pour chaque côté non encore associé, on cherche le côté compatible
-          (bosse<->creux) d'une AUTRE pièce le plus proche (distance minimale)
-        - on associe et on marque les deux côtés comme "utilisés"
-        - on répète jusqu'à épuisement des côtés associables
+    Contrairement à une approche gloutonne (qui associe au fur et à mesure
+    le meilleur partenaire encore disponible, au risque de "gâcher" une
+    bonne paire trouvée plus tard dans le parcours), l'algorithme hongrois
+    minimise la somme totale des distances sur l'ensemble des associations
+    en une seule résolution : le résultat est optimal globalement, pas
+    seulement localement.
 
-    Retourne une liste de paires ((pieceA, coteA), (pieceB, coteB)).
+    Le problème est naturellement biparti : on associe l'ensemble des
+    côtés "bosse" (catégorie 1) à l'ensemble des côtés "creux"
+    (catégorie 2). La matrice de coût contient, pour chaque paire
+    (bosse, creux), la distance calculée par `distance_cotes` (qui réaligne
+    déjà les deux profils avant de les comparer). Les paires appartenant à
+    la même pièce reçoivent un coût prohibitif (`PENALITE_MEME_PIECE`) pour
+    ne jamais être retenues, sauf en dernier recours si aucune autre
+    option n'existe — auquel cas elles sont filtrées après résolution.
+
+    Retourne une liste de paires ((pieceA, coteA), (pieceB, coteB)), comme
+    l'ancienne version gloutonne (même format, compatible avec
+    `visualiser_schema_pieces`).
     """
-    # On ne garde que les côtés "actifs" (non plats)
-    cotes = []
+    bosses = []
+    creux = []
     for pid, cotes_piece in dict_ctrl.items():
         for cid, info in enumerate(cotes_piece):
-            if info["cat"] != 0:
-                cotes.append((pid, cid))
+            if info["cat"] == 1:
+                bosses.append((pid, cid))
+            elif info["cat"] == 2:
+                creux.append((pid, cid))
 
-    # Pré-calcul des distances entre tous les couples de côtés compatibles
-    # (bosse <-> creux) appartenant à des pièces différentes
-    distances = {}
-    for (pA, cA) in cotes:
-        for (pB, cB) in cotes:
-            if pA != pB:
-                catA = dict_ctrl[pA][cA]["cat"]
-                catB = dict_ctrl[pB][cB]["cat"]
-                if (catA, catB) in [(1, 2), (2, 1)]:
-                    distances[((pA, cA), (pB, cB))] = distance_cotes(
-                        dict_ctrl[pA][cA]["ctrl"],
-                        dict_ctrl[pB][cB]["ctrl"]
-                    )
+    if not bosses or not creux:
+        return []
+
+    # Matrice de coût : lignes = bosses, colonnes = creux
+    cout = np.empty((len(bosses), len(creux)))
+    for i, (pA, cA) in enumerate(bosses):
+        for j, (pB, cB) in enumerate(creux):
+            if pA == pB:
+                cout[i, j] = PENALITE_MEME_PIECE
+            else:
+                cout[i, j] = distance_cotes(
+                    dict_ctrl[pA][cA]["ctrl"],
+                    dict_ctrl[pB][cB]["ctrl"]
+                )
+
+    # Résolution du problème d'affectation optimale (algorithme hongrois).
+    # Fonctionne même si le nombre de bosses diffère du nombre de creux
+    # (matrice rectangulaire) : on obtient alors min(len(bosses), len(creux))
+    # associations, ce qui est le comportement souhaité.
+    lignes, colonnes = linear_sum_assignment(cout)
 
     associations = []
-    associes = set()  # côtés déjà associés, à ne plus réutiliser
-
-    for (pA, cA) in cotes:
-        if (pA, cA) in associes:
+    for i, j in zip(lignes, colonnes):
+        # On écarte les associations "forcées" entre côtés d'une même pièce
+        # (n'apparaissent que si le solveur n'avait vraiment aucun autre choix).
+        if cout[i, j] >= PENALITE_MEME_PIECE:
             continue
-
-        meilleur = None
-        meilleure_dist = np.inf
-
-        # Recherche du meilleur partenaire disponible pour ce côté
-        for (pB, cB) in cotes:
-            if (pB, cB) in associes:
-                continue
-            if pA == pB:
-                continue
-
-            key = ((pA, cA), (pB, cB))
-            if key in distances:
-                d = distances[key]
-                if d < meilleure_dist:
-                    meilleure_dist = d
-                    meilleur = (pB, cB)
-
-        if meilleur is not None:
-            associations.append(((pA, cA), meilleur))
-            associes.add((pA, cA))
-            associes.add(meilleur)
+        associations.append((bosses[i], creux[j]))
 
     return associations
 
