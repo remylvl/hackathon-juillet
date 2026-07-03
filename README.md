@@ -3,7 +3,6 @@
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 
-
 # Puzzle Solver — README POUR MAIN.PY
 Nous avons gardé dans cette partie (le main), la détection sans apprentissage.
 Script autonome : détecte plusieurs pièces de puzzle sur fond bleu, extrait leurs côtés, les classe (plat/bosse/creux) et associe automatiquement les côtés complémentaires entre pièces.
@@ -11,7 +10,7 @@ Script autonome : détecte plusieurs pièces de puzzle sur fond bleu, extrait le
 ## Installation que nous avons dû faire en plus 
 
 ```bash
-pip install numpy matplotlib scipy scikit-image
+pip install numpy matplotlib scipy scikit-image 
 ```
 
 ## Utilisation
