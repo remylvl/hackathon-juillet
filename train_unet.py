@@ -212,7 +212,7 @@ def train_model():
 
     # Utilisation de la carte graphique si disponible, sinon processeur
     if torch.cuda.is_available():
-        device = torch.device("cuda") # Pour Nvidia
+        device = torch.device("cuda:1") # Pour Nvidia
     elif torch.backends.mps.is_available():
         device = torch.device("mps")  # Pour ton MacBook Pro (Apple Silicon)
     else:
