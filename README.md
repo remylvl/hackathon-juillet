@@ -57,8 +57,6 @@ La ligne bleue : La courbe B-spline finale lissée et reconstruite.
 3. Logs Console
 Le terminal affiche la progression étape par étape (Chargement IA, Traitement, Normalisation, Optimisation) et confirme la dimension des arrays stockés dans le dictionnaire final.
 
-
-
 # Puzzle Solver — README POUR main_vision_par_ordi.py
 
 
