@@ -3,19 +3,18 @@ Analyse d'une pièce de puzzle à partir d'une photo.
 
 Étapes :
 1. Segmentation de la pièce par couleur (masque HSV calibré automatiquement),
-   affiné par GrabCut si dispo (robuste aux ombres).
-2. Nettoyage du masque (ouverture/fermeture morphologique, remplissage des trous).
-3. Extraction du contour et détection des 4 coins (courbure locale).
-4. Découpage du contour en segments (un par côté de la pièce).
-5. Ajustement d'une spline sur chaque segment.
+   affiné par GrabCut (robuste aux ombres)
+2. Nettoyage du masque
+3. Extraction du contour et détection des 4 coins
+4. Découpage du contour en segments
+5. Ajustement d'une spline sur chaque segment
 6. Normalisation de chaque segment dans un repère coin-à-coin, pour pouvoir
    comparer la forme des côtés entre pièces différentes.
 
 Pour chaque pièce analysée, une figure récapitulative en 4 panneaux
 (masque, contour+coins, segments, segments normalisés) est enregistrée
-dans un dossier "verification/" — pratique pour vérifier d'un coup d'œil
-que le pipeline fonctionne bien sur toutes les pièces d'un lot, sans
-ouvrir des dizaines de fenêtres matplotlib.
+dans un dossier "verification/"
+
 """
 
 import os
@@ -37,30 +36,29 @@ except ImportError:
     _CV2_DISPONIBLE = False
 
 
-# ----------------------------------------------------------------------
-# Configuration
-# ----------------------------------------------------------------------
+
 
 FICHIER_IMAGE = "./resources/piece4.jpeg"
 UTILISER_GRABCUT = True     # affine le masque HSV avec GrabCut (robuste aux ombres)
                              # nécessite `pip install opencv-python`
 
-# Paramètres de calibration du masque de couleur
+# Paramètres de calibration du masque de couleur (à changer selon la luminosité et les caractéristiques des photos des pièces)
 SAT_MIN = 0.20
 VAL_MIN = 0.20
 LARGEUR_HUE = 0.06
 
 # Paramètres de détection des coins / segments
 NB_COINS = 4
-# Exprimés en fraction du périmètre du contour plutôt qu'en pixels fixes,
-# pour être robustes à des photos de résolutions/tailles de pièces différentes.
+
+# Exprimés en fraction du périmètre du contour plutôt qu'en pixels fixes, pour être robustes à des photos de résolutions/tailles de pièces différentes.
 FRACTION_SEUIL_COURBURE = 0.02      # taille de la fenêtre de calcul de courbure
 FRACTION_DISTANCE_MIN_COINS = 0.15  # distance min entre deux coins retenus
 
 
-# ----------------------------------------------------------------------
+
+
 # 1. Chargement de l'image et masque de couleur
-# ----------------------------------------------------------------------
+
 
 def charger_image(chemin):
     """Charge l'image et renvoie (image RGB, canaux H, S, V)."""
@@ -72,11 +70,10 @@ def charger_image(chemin):
 
 def creer_masque_couleur(img_h, img_s, img_v, sat_min=SAT_MIN, val_min=VAL_MIN,
                           largeur_hue=LARGEUR_HUE):
-    """Construit un masque binaire de la pièce en calibrant automatiquement
-    la teinte dominante parmi les pixels suffisamment saturés."""
+    #Construit un masque binaire de la pièce en calibrant automatiquement la teinte dominante parmi les pixels suffisamment saturés.
     candidat = (img_s > sat_min) & (img_v > val_min)
     if not np.any(candidat):
-        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.")
+        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.") #si mauvaise photo, on s'en rend compte et ca fait pas tout planter
 
     h_candidats = img_h[candidat]
     hist, bins = np.histogram(h_candidats, bins=60, range=(0.0, 1.0))
@@ -88,17 +85,7 @@ def creer_masque_couleur(img_h, img_s, img_v, sat_min=SAT_MIN, val_min=VAL_MIN,
 
 
 def creer_masque_grabcut(fichier_image, masque_initial, iterations=5, marge_certaine_fond=40):
-    """Affine un masque grossier (ex : celui de `creer_masque_couleur`) avec
-    l'algorithme GrabCut. Contrairement à un simple seuillage de teinte,
-    GrabCut modélise statistiquement les couleurs de la pièce et du fond
-    (mélanges de gaussiennes), ce qui le rend beaucoup plus robuste aux
-    ombres portées par la pièce sur le fond — la source la plus fréquente
-    d'aspérités/faux coins sur le contour détecté.
-
-    `marge_certaine_fond` : au-delà de cette distance (en pixels) de la
-    boîte englobante du masque initial, on considère le fond comme certain
-    (accélère et stabilise la convergence de GrabCut).
-    """
+    # on utilise grabcut pour encore améliorer le masque sinon c'est pas robuste aux ombres
     if not _CV2_DISPONIBLE:
         raise ImportError("GrabCut nécessite opencv-python : `pip install opencv-python`.")
 
@@ -109,12 +96,12 @@ def creer_masque_grabcut(fichier_image, masque_initial, iterations=5, marge_cert
     masque_gc = np.full(img_bgr.shape[:2], cv2.GC_PR_BGD, dtype=np.uint8)
     masque_gc[masque_initial] = cv2.GC_PR_FGD
 
-    # Cœur érodé du masque initial : quasi certainement la pièce.
+    # quasi certainement la pièce
     noyau = np.ones((15, 15), np.uint8)
     coeur = cv2.erode(masque_initial.astype(np.uint8), noyau, iterations=1).astype(bool)
     masque_gc[coeur] = cv2.GC_FGD
 
-    # Zone loin de la boîte englobante de la pièce : certainement le fond.
+    # certainement le fond
     lignes, colonnes = np.where(masque_initial)
     if len(lignes) > 0:
         r_min, r_max = lignes.min(), lignes.max()
@@ -137,9 +124,7 @@ def creer_masque_grabcut(fichier_image, masque_initial, iterations=5, marge_cert
 
 
 def obtenir_masque_piece(fichier_image, img_h, img_s, img_v, utiliser_grabcut=UTILISER_GRABCUT):
-    """Construit le masque final de la pièce : seuillage HSV pour une
-    estimation grossière, raffinement optionnel par GrabCut (robuste aux
-    ombres), puis nettoyage morphologique standard dans tous les cas."""
+    # fusion des deux méthodes de masque
     masque_brut, h_centre = creer_masque_couleur(img_h, img_s, img_v)
     print(f"Teinte dominante détectée automatiquement : {h_centre:.3f}")
 
@@ -153,13 +138,12 @@ def obtenir_masque_piece(fichier_image, img_h, img_s, img_v, utiliser_grabcut=UT
     return nettoyer_masque(masque_brut)
 
 
-# ----------------------------------------------------------------------
+
+
 # 2. Nettoyage du masque
-# ----------------------------------------------------------------------
 
 def nettoyer_masque(masque):
-    """Enlève le bruit, lisse le contour, ne garde que la plus grande
-    composante connexe et comble les trous internes."""
+    # Enlève le bruit, lisse le contour, ne garde que la plus grande composante connexe et comble les trous internes
     masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
     masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((20, 20)))
 
@@ -174,18 +158,18 @@ def nettoyer_masque(masque):
     return ndimage.binary_fill_holes(masque_piece)
 
 
-# ----------------------------------------------------------------------
+
+
 # 3. Contour et détection des coins (par courbure)
-# ----------------------------------------------------------------------
 
 def extraire_contour_principal(masque_final):
-    """Renvoie le plus long contour détecté dans le masque."""
+    # renvoie le plus long contour détecté dans le masque
     contours = measure.find_contours(masque_final, level=0.5)
     return max(contours, key=len)
 
 
 def lisser_contour(contour, sigma=7):
-    """Lisse un contour fermé par filtre gaussien (wrap autour de la boucle)."""
+    # lisse un contour fermé par filtre gaussien (wrap autour de la boucle)
     contour_ferme = np.vstack([contour, contour[:1]])
     row_lisse = ndimage.gaussian_filter1d(contour_ferme[:, 0], sigma=sigma, mode="wrap")[:-1]
     col_lisse = ndimage.gaussian_filter1d(contour_ferme[:, 1], sigma=sigma, mode="wrap")[:-1]
@@ -193,8 +177,7 @@ def lisser_contour(contour, sigma=7):
 
 
 def score_courbure(contour, index, seuil):
-    """Score de courbure locale au point `index`, basé sur le produit
-    scalaire entre les vecteurs vers les voisins gauche/droite."""
+    # score de courbure locale au point `index`, basé sur le produit scalaire entre les vecteurs vers les voisins gauche/droite
     n = len(contour)
     p = contour[index]
     score = 0.0
@@ -209,8 +192,7 @@ def score_courbure(contour, index, seuil):
 
 
 def max_courbure(contour, points, seuil, distance_min, nb_coins=NB_COINS):
-    """Sélectionne les `nb_coins` points de plus forte courbure parmi
-    `points`, en imposant une distance minimale entre eux."""
+    # sélectionne les 4 points de plus forte courbure parmi points, en imposant une distance minimale entre eux pour éviter qu'ils détectent les bouts des pièces comme coins
     if len(points) == 0:
         return np.array([]), np.array([])
 
@@ -240,19 +222,11 @@ def detecter_coins_par_courbure(contour, nb_coins=NB_COINS, pas_echantillonnage=
                                  fraction_seuil=FRACTION_SEUIL_COURBURE,
                                  fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
                                  nb_tentatives_max=6):
-    """Détecte les `nb_coins` coins d'une pièce par score de courbure locale,
-    en échantillonnant TOUT le contour (pas une version simplifiée, qui peut
-    perdre trop d'information sur de petites images) et avec des seuils
-    exprimés en fraction du périmètre plutôt qu'en pixels fixes, pour rester
-    valables quelle que soit la résolution de la photo ou la taille de la pièce.
+    
+    # Détecte les 4 coins d'une pièce par score de courbure locale,
 
-    Si `distance_min` empêche de trouver `nb_coins` coins distincts, on la
-    relâche progressivement (÷ 1.3 à chaque tentative) jusqu'à obtenir
-    `nb_coins` coins ou épuiser les tentatives.
+    # Si distance_min empêche de trouver 4 coins distincts, on la relâche progressivement (÷ 1.3 à chaque tentative)
 
-    Renvoie (coins, indices_coins_tries) — `coins` en (row, col), et
-    `indices_coins_tries` triés dans l'ordre du contour.
-    """
     n = len(contour)
     seuil = max(5, int(n * fraction_seuil))
     distance_min = max(10, n * fraction_distance_min)
