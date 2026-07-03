@@ -109,37 +109,70 @@ def extract_four_corners(heatmap: np.ndarray, min_distance_pixels: int = 60) -> 
     return np.array(corners, dtype=np.int32)
 
 
-def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray) -> np.ndarray:
+def refine_corners_with_math(mask: np.ndarray, nn_corners: np.ndarray, radius: int = 40) -> np.ndarray:
     """
-    Corrige l'imprécision de l'IA en 'aimantant' ses prédictions
-    sur les vrais angles géométriques détectés mathématiquement.
+    Raffine les coins prédits par l'IA en cherchant le point de courbure maximale 
+    sur le contour dans un rayon donné autour de chaque prédiction.
     """
-    # 1. Détection de tous les angles saillants sur le masque binaire pur (Shi-Tomasi)
-    # On autorise jusqu'à 20 coins (les 4 de la pièce + les fausses alertes des encoches)
-    math_corners = cv2.goodFeaturesToTrack(
-        mask, maxCorners=20, qualityLevel=0.01, minDistance=15
-    )
-    
-    if math_corners is None:
-        print("Attention : Aucun coin mathématique trouvé, on garde l'IA brute.")
+    # 1. Extraire le contour principal
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
         return nn_corners
-        
-    math_corners = math_corners.reshape(-1, 2)
+    contour = max(contours, key=cv2.contourArea).squeeze() # (N, 2)
+    N = len(contour)
+
     refined_corners = []
-    
-    # 2. Association de l'IA avec la Mathématique
+
     for nn_c in nn_corners:
-        # On calcule la distance entre le point prédit par l'IA et tous les vrais coins
-        distances = np.linalg.norm(math_corners - nn_c, axis=1)
-        closest_idx = np.argmin(distances)
-        
-        # Si un vrai coin existe dans un rayon de 40 pixels, on s'y accroche
-        if distances[closest_idx] < 40: 
-            refined_corners.append(math_corners[closest_idx])
-        else:
-            # Sinon (cas d'erreur rare), on fait confiance à l'IA
+        # Trouver les points du contour à l'intérieur du rayon
+        distances = np.linalg.norm(contour - nn_c, axis=1)
+        pts_in_radius_indices = np.where(distances <= radius)[0]
+
+        if len(pts_in_radius_indices) == 0:
+            # Aucun point du contour à proximité, on garde la prédiction IA
             refined_corners.append(nn_c)
+            continue
+
+        # Calculer la "courbure" pour chaque point dans le rayon
+        max_curvature = -1
+        best_corner = nn_c
+
+        # On utilise un pas (step) pour regarder des voisins un peu distants sur le contour,
+        # ce qui rend le calcul d'angle plus robuste aux petits défauts du masque.
+        step = max(5, N // 100) 
+
+        for idx in pts_in_radius_indices:
+            # Indices des voisins
+            idx_prev = (idx - step) % N
+            idx_next = (idx + step) % N
+
+            p = contour[idx]
+            p_prev = contour[idx_prev]
+            p_next = contour[idx_next]
+
+            # Vecteurs
+            v1 = p_prev - p
+            v2 = p_next - p
+
+            # Calcul du cosinus de l'angle entre v1 et v2
+            norm1 = np.linalg.norm(v1)
+            norm2 = np.linalg.norm(v2)
             
+            if norm1 > 0 and norm2 > 0:
+                cos_angle = np.dot(v1, v2) / (norm1 * norm2)
+                # Plus l'angle est aigu (proche de 90° ou moins), 
+                # plus le cosinus est grand (ou proche de 0, donc on cherche la valeur la plus proche de 1)
+                
+                # Un angle aigu (coin) aura un cosinus positif (ex: cos(90)=0, cos(45)=0.7)
+                # Un bord plat aura un cosinus proche de -1 (ex: cos(180)=-1)
+                
+                # On cherche la valeur maximale de cos_angle (l'angle le plus fermé)
+                if cos_angle > max_curvature:
+                    max_curvature = cos_angle
+                    best_corner = p
+
+        refined_corners.append(best_corner)
+
     return np.array(refined_corners, dtype=np.int32)
 
 def load_trained_model(weights_path="unet_puzzle_weights.pth"):
@@ -164,6 +197,46 @@ def load_trained_model(weights_path="unet_puzzle_weights.pth"):
     
     return model, device
 
+def recalculer_coins_geometriques(mask: np.ndarray) -> np.ndarray:
+    """
+    Utilise la morphologie mathématique pour effacer les bosses et boucher les creux.
+    La pièce devient un carré pur, ce qui permet de trouver les vrais angles à 90°.
+    """
+    # 1. Binarisation stricte
+    mask_uint8 = (mask > 0.5).astype(np.uint8) * 255 if mask.max() <= 1.0 else mask.astype(np.uint8)
+    
+    # 2. Astuce Morphologique : Transformer la pièce en carré
+    # La taille du noyau s'adapte à la taille de l'image (128x128 -> noyau d'environ 17x17)
+    taille_noyau = max(5, mask_uint8.shape[0] // 7)
+    kernel = np.ones((taille_noyau, taille_noyau), np.uint8)
+    
+    # Étape A : Boucher les creux (Fermeture)
+    mask_sans_creux = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)
+    
+    # Étape B : Limer les bosses (Ouverture)
+    mask_carre = cv2.morphologyEx(mask_sans_creux, cv2.MORPH_OPEN, kernel)
+    
+    # 3. Trouver la boîte englobante de ce nouveau masque devenu carré
+    contours_carre, _ = cv2.findContours(mask_carre, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours_carre:
+        raise ValueError("Erreur lors de la transformation morphologique.")
+        
+    contour_carre = max(contours_carre, key=cv2.contourArea).squeeze()
+    rect = cv2.minAreaRect(contour_carre)
+    coins_carre = cv2.boxPoints(rect)
+        
+    # 4. Ramener ces 4 coins trouvés sur le VRAI contour de la pièce originale
+    contours_vrais, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    vrai_contour = max(contours_vrais, key=cv2.contourArea).squeeze()
+    
+    coins_finaux = []
+    for pt in coins_carre:
+        distances = np.linalg.norm(vrai_contour - pt, axis=1)
+        closest_idx = np.argmin(distances)
+        coins_finaux.append(vrai_contour[closest_idx])
+        
+    return np.array(coins_finaux, dtype=np.int32)
+
 def predict_mask(model, device, image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -184,10 +257,9 @@ def predict_mask(model, device, image_path):
     
     binary_mask = (probability_mask > 0.5).astype(np.uint8)
     final_cv2_mask = binary_mask * 255
-    
-    # On garde la fonction mathématique de raffinement pour le pixel près
-    corners = extract_four_corners(heatmap_corners, min_distance_pixels=60) 
-    corners = refine_corners_with_math(final_cv2_mask, corners)
+
+    corners = recalculer_coins_geometriques(final_cv2_mask)
+
     
     # CRITIQUE : on retourne la heatmap en plus
     return final_cv2_mask, img_resized, corners, heatmap_corners
@@ -195,7 +267,7 @@ def predict_mask(model, device, image_path):
 
 # EXÉCUTION RÉELLE (Liaison IA -> Mathématiques -> Données)
 if __name__ == "__main__":
-    from inference_hackton_affichage import load_trained_model, predict_mask, refine_corners_with_math
+    from inference_hackathon import load_trained_model, predict_mask, refine_corners_with_math
     from geometry_utils import extract_and_normalize_edges
     from optimisation_bspline import fit_spline_to_segment
     import os

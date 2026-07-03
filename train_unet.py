@@ -87,9 +87,11 @@ class PuzzleUNet(nn.Module):
 # 2) Le Générateur de Données (PyTorch Dataset)
 # ============================================================
 class PuzzleDataset(Dataset):
-    def __init__(self, num_samples=1000, img_size=64):
+    def __init__(self, num_samples=1000, img_size=512, rotation=True, max_rotation=5): 
+        self.rotation = rotation
         self.num_samples = num_samples
         self.img_size = img_size
+        self.max_rotation = max_rotation
         self.rng = np.random.default_rng()
         self.coord_min = -0.3
         self.coord_max = 1.3
@@ -141,13 +143,18 @@ class PuzzleDataset(Dataset):
                 noisy_img = cv2.GaussianBlur(noisy_img, (3, 3), 0)
             
             # On choisit un angle de rotation totalement aléatoire entre -180° et +180°
-            angle_aleatoire = self.rng.uniform(-180, 180)
             centre = (self.img_size // 2, self.img_size // 2)
             
+            # On utilise uniquement ta nouvelle logique 'max_rotation'
+            if hasattr(self, 'max_rotation') and self.max_rotation > 0:
+                angle = self.rng.uniform(-self.max_rotation, self.max_rotation)
+            else:
+                angle = 0.0
+    
             # Matrice de rotation
             zoom_aleatoire = self.rng.uniform(0.6, 0.85)
 
-            M = cv2.getRotationMatrix2D(centre, angle_aleatoire, scale=zoom_aleatoire)
+            M = cv2.getRotationMatrix2D(centre, angle, scale=zoom_aleatoire)
             
             # On fait pivoter les 3 matrices EXACTEMENT du même angle
             # 1. L'image bruitée (le fond est rempli avec la couleur de fond bg_color)
@@ -218,7 +225,7 @@ def train_model():
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     # Création du Dataset (10 000 images générées à la volée) et du DataLoader
-    dataset = PuzzleDataset(num_samples=10000, img_size=512)
+    dataset = PuzzleDataset(num_samples=10000, img_size=512, max_rotation = 5)
     dataloader = DataLoader(
     dataset, 
     batch_size=BATCH_SIZE, 
