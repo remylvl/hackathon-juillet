@@ -154,7 +154,7 @@ class PuzzleDataset(Dataset):
             # Matrice de rotation
             zoom_aleatoire = self.rng.uniform(0.6, 0.85)
 
-            M = cv2.getRotationMatrix2D(centre, angle_aleatoire, scale=zoom_aleatoire)
+            M = cv2.getRotationMatrix2D(centre, angle, scale=zoom_aleatoire)
             
             # On fait pivoter les 3 matrices EXACTEMENT du même angle
             # 1. L'image bruitée (le fond est rempli avec la couleur de fond bg_color)
