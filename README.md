@@ -3,16 +3,12 @@
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 
+### Nous avons 3 algorithmes différets 
+
 
 # Puzzle Solver — README POUR MAIN.PY
 Nous avons gardé dans cette partie (le main), la détection sans apprentissage.
 Script autonome : détecte plusieurs pièces de puzzle sur fond bleu, extrait leurs côtés, les classe (plat/bosse/creux) et associe automatiquement les côtés complémentaires entre pièces.
-
-## Installation que nous avons dû faire en plus 
-
-```bash
-pip install numpy matplotlib scipy scikit-image
-```
 
 ## Utilisation
 
@@ -33,3 +29,30 @@ python main.py
 - `dict_ctrl` : `{piece_id: [{"ctrl": array(15,2), "cat": 0|1|2}, ...]}` (un élément par côté).
 - `associations` : liste de tuples `((piece_A, côté_A), (piece_B, côté_B))`.
 - Plusieurs fenêtres matplotlib si `AFFICHER_GRAPHIQUES=True` (masque, contour+coins, splines, segments normalisés, schéma final).
+
+# Puzzle Solver — README POUR inference_hackathon.py
+
+## Utilisation 
+
+Image d'entrée : Vous devez renseigner le chemin vers la photo de la pièce de puzzle à analyser (par défaut algo_tuteur/photo_test_5.jpg).
+Lancement : Exécutez simplement le script de manière classique via la commande python inference_hackathon.py
+
+## Sortie 
+
+L'exécution du script génère trois types de résultats : des données structurées, des affichages graphiques de contrôle, et des logs dans le terminal.
+
+1. Structure de données (Dictionnaire Python)
+Le script génère un dictionnaire global nommé dict_ctrl conçu pour stocker l'intégralité des pièces traitées.
+La pièce est identifiée dynamiquement par le nom de son fichier image (ex: "photo_test_5").
+Pour chaque pièce, le dictionnaire contient les 4 bords (numérotés de 0 à 3 correspondant à Haut, Droite, Bas, Gauche).
+Chaque bord contient un tableau matriciel (array numpy) de dimensions 9x2, stocké sous la clé "ctrl", représentant les 9 points de contrôle mathématiques de la courbe B-spline optimisée de ce côté.
+
+2. Sorties Visuelles (Matplotlib)
+Diagnostic IA : Une première fenêtre affiche une "Carte de Chaleur" (Heatmap) en fausses couleurs (magma) montrant exactement où le réseau de neurones a localisé les 4 coins de la pièce.
+Contrôle d'Ajustement : Une grille de 4 graphiques (2x2) s'affiche ensuite, détaillant chaque côté normalisé de la pièce. Chaque graphique superpose :
+Les points gris : Le contour brut prédit par l'IA.
+Les croix rouges : Les 9 points de contrôle B-spline calculés.
+La ligne bleue : La courbe B-spline finale lissée et reconstruite.
+
+3. Logs Console
+Le terminal affiche la progression étape par étape (Chargement IA, Traitement, Normalisation, Optimisation) et confirme la dimension des arrays stockés dans le dictionnaire final.

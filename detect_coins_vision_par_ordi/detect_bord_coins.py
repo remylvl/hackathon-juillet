@@ -1,21 +1,4 @@
-"""
-Analyse d'une pièce de puzzle à partir d'une photo.
-
-Étapes :
-1. Segmentation de la pièce par couleur (masque HSV calibré automatiquement),
-   affiné par GrabCut (robuste aux ombres)
-2. Nettoyage du masque
-3. Extraction du contour et détection des 4 coins
-4. Découpage du contour en segments
-5. Ajustement d'une spline sur chaque segment
-6. Normalisation de chaque segment dans un repère coin-à-coin, pour pouvoir
-   comparer la forme des côtés entre pièces différentes.
-
-Pour chaque pièce analysée, une figure récapitulative en 4 panneaux
-(masque, contour+coins, segments, segments normalisés) est enregistrée
-dans un dossier "verification/"
-
-"""
+# analyse de pièces de puzzle à partir d'un scan
 
 import os
 
@@ -36,32 +19,28 @@ except ImportError:
     _CV2_DISPONIBLE = False
 
 
-
-
 FICHIER_IMAGE = "./resources/piece4.jpeg"
-UTILISER_GRABCUT = True     # affine le masque HSV avec GrabCut (robuste aux ombres)
-                             # nécessite `pip install opencv-python`
+UTILISER_GRABCUT = True     # affine le masque hsv avec grabcut (robuste aux ombres)
+                             # nécessite pip install opencv-python
 
-# Paramètres de calibration du masque de couleur (à changer selon la luminosité et les caractéristiques des photos des pièces)
+# seuils pour calibrer le masque de couleur (à changer selon la luminosité et les photos)
 SAT_MIN = 0.20
 VAL_MIN = 0.20
 LARGEUR_HUE = 0.06
 
-# Paramètres de détection des coins / segments
+# détection des coins / segments
 NB_COINS = 4
 
-# Exprimés en fraction du périmètre du contour plutôt qu'en pixels fixes, pour être robustes à des photos de résolutions/tailles de pièces différentes.
+# exprimés en fraction du périmètre plutôt qu'en pixels fixes, pour être robuste à des photos de résolutions/tailles de pièces différentes
 FRACTION_SEUIL_COURBURE = 0.02      # taille de la fenêtre de calcul de courbure
 FRACTION_DISTANCE_MIN_COINS = 0.15  # distance min entre deux coins retenus
 
 
-
-
-# 1. Chargement de l'image et masque de couleur
+# 1. chargement de l'image et masque de couleur
 
 
 def charger_image(chemin):
-    """Charge l'image et renvoie (image RGB, canaux H, S, V)."""
+    # charge l'image et renvoie (rgb, h, s, v)
     img = image.imread(chemin)
     img_rgb = img[:, :, :3]
     img_hsv = rgb2hsv(img_rgb)
@@ -70,10 +49,10 @@ def charger_image(chemin):
 
 def creer_masque_couleur(img_h, img_s, img_v, sat_min=SAT_MIN, val_min=VAL_MIN,
                           largeur_hue=LARGEUR_HUE):
-    #Construit un masque binaire de la pièce en calibrant automatiquement la teinte dominante parmi les pixels suffisamment saturés.
+    # construit un masque binaire en calibrant automatiquement la teinte dominante des pixels saturés
     candidat = (img_s > sat_min) & (img_v > val_min)
     if not np.any(candidat):
-        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.") #si mauvaise photo, on s'en rend compte et ca fait pas tout planter
+        raise ValueError("Aucun pixel suffisamment saturé pour calibrer le masque.")  # si mauvaise photo, on s'en rend compte et ça fait pas tout planter
 
     h_candidats = img_h[candidat]
     hist, bins = np.histogram(h_candidats, bins=60, range=(0.0, 1.0))
@@ -138,12 +117,11 @@ def obtenir_masque_piece(fichier_image, img_h, img_s, img_v, utiliser_grabcut=UT
     return nettoyer_masque(masque_brut)
 
 
+# 2. nettoyage du masque
 
-
-# 2. Nettoyage du masque
 
 def nettoyer_masque(masque):
-    # Enlève le bruit, lisse le contour, ne garde que la plus grande composante connexe et comble les trous internes
+    # enlève le bruit, lisse le contour, garde que la plus grande zone connexe, comble les trous
     masque_propre = ndimage.binary_opening(masque, structure=np.ones((3, 3)))
     masque_propre = ndimage.binary_closing(masque_propre, structure=np.ones((20, 20)))
 
@@ -158,9 +136,8 @@ def nettoyer_masque(masque):
     return ndimage.binary_fill_holes(masque_piece)
 
 
+# 3. contour et détection des coins (par courbure)
 
-
-# 3. Contour et détection des coins (par courbure)
 
 def extraire_contour_principal(masque_final):
     # renvoie le plus long contour détecté dans le masque
@@ -177,7 +154,7 @@ def lisser_contour(contour, sigma=7):
 
 
 def score_courbure(contour, index, seuil):
-    # score de courbure locale au point `index`, basé sur le produit scalaire entre les vecteurs vers les voisins gauche/droite
+    # score de courbure locale au point index, basé sur le produit scalaire entre les vecteurs vers les voisins gauche/droite
     n = len(contour)
     p = contour[index]
     score = 0.0
@@ -222,11 +199,8 @@ def detecter_coins_par_courbure(contour, nb_coins=NB_COINS, pas_echantillonnage=
                                  fraction_seuil=FRACTION_SEUIL_COURBURE,
                                  fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
                                  nb_tentatives_max=6):
-    
-    # Détecte les 4 coins d'une pièce par score de courbure locale,
-
-    # Si distance_min empêche de trouver 4 coins distincts, on la relâche progressivement (÷ 1.3 à chaque tentative)
-
+    # détecte les 4 coins par score de courbure locale
+    # si distance_min empêche de trouver 4 coins distincts, on la relâche progressivement (÷ 1.3 à chaque tentative)
     n = len(contour)
     seuil = max(5, int(n * fraction_seuil))
     distance_min = max(10, n * fraction_distance_min)
@@ -258,32 +232,9 @@ def detecter_coins_par_courbure(contour, nb_coins=NB_COINS, pas_echantillonnage=
 def detecter_coins_harris_convexe(masque_final, contour, nb_coins=NB_COINS,
                                    fraction_distance_min=FRACTION_DISTANCE_MIN_COINS,
                                    sigma_harris=2, nb_tentatives_max=6):
-    """Détecte les coins d'une pièce en combinant deux critères robustes,
-    bien plus fiables qu'un simple score de courbure le long du contour :
-
-    1. Seuls les points de l'ENVELOPPE CONVEXE du contour sont candidats.
-       Ça élimine d'office les points concaves (le cou d'un tenon, le fond
-       d'une encoche), qui n'ont géométriquement rien à voir avec un coin
-       de pièce, mais qui peuvent avoir un score de courbure très élevé et
-       tromper une détection purement locale.
-
-    2. Parmi ces candidats, on garde ceux à plus forte réponse de HARRIS
-       (`skimage.feature.corner_harris`), qui détecte une vraie structure
-       de coin (deux bords ~droits qui se croisent à angle vif) et répond
-       beaucoup plus faiblement à une bosse arrondie de tenon — sur nos
-       pièces, l'écart observé est net (score ~2.5-3.3 sur un vrai coin,
-       ~0.1-0.2 sur le pic d'un tenon).
-
-    IMPORTANT : `contour` doit être le contour BRUT (celui renvoyé par
-    `extraire_contour_principal`, PAS `lisser_contour`) : le lissage gaussien
-    en mode 'wrap' introduit du bruit numérique qui fait exploser le nombre
-    de points jugés "convexes" (observé : 237 points au lieu d'une trentaine
-    sur une pièce test), ce qui rend le filtre inutile.
-
-    Renvoie (coins, indices_coins_tries), au même format que
-    `detecter_coins_par_courbure` : `coins` en (row, col), et
-    `indices_coins_tries` triés dans l'ordre du contour.
-    """
+    # deux critères combinés, bien plus fiables qu'un simple score de courbure :
+    # 1. on prend que les points de l'enveloppe convexe -> ça élimine direct les points concaves (le cou d'un tenon, le fond d'une encoche) qui peuvent avoir une courbure énorme mais qui sont pas des coins
+    # 2. parmi ces candidats, on garde ceux avec la plus forte réponse de harris, qui détecte un vrai coin (deux bords ~droits qui se croisent à angle vif) et répond beaucoup moins à une bosse arrondie de tenon (écart observé net sur nos pièces : ~2.5-3.3 sur un vrai coin, ~0.1-0.2 sur un tenon)
     n = len(contour)
     pts_xy = contour[:, ::-1]  # (x, y)
     hull = ConvexHull(pts_xy)
@@ -327,12 +278,11 @@ def detecter_coins_harris_convexe(masque_final, contour, nb_coins=NB_COINS,
     return coins, coins_indices
 
 
-# ----------------------------------------------------------------------
-# 4. Découpage en segments
-# ----------------------------------------------------------------------
+# 4. découpage en segments
+
 
 def extraire_segments(contour, indices):
-    """Découpe le contour en segments entre coins consécutifs (boucle)."""
+    # découpe le contour en segments entre coins consécutifs (c'est une boucle)
     segments = []
     n = len(indices)
     for k in range(n):
@@ -346,12 +296,11 @@ def extraire_segments(contour, indices):
     return segments
 
 
-# ----------------------------------------------------------------------
-# 5. Ajustement de splines
-# ----------------------------------------------------------------------
+# 5. ajustement de splines
+
 
 def nettoyer_doublons_consecutifs(segment):
-    """Enlève les points consécutifs identiques (requis par splprep)."""
+    # enlève les points consécutifs identiques (splprep plante sinon)
     garder = [segment[0]]
     for p in segment[1:]:
         if not np.array_equal(p, garder[-1]):
@@ -360,7 +309,7 @@ def nettoyer_doublons_consecutifs(segment):
 
 
 def ajuster_spline_segment(segment, lissage=0):
-    """Ajuste une spline paramétrique (x(u), y(u)) sur un segment."""
+    # spline paramétrique (x(u), y(u)) sur un segment
     segment = nettoyer_doublons_consecutifs(segment)
     x = segment[:, 1]
     y = segment[:, 0]
@@ -368,15 +317,11 @@ def ajuster_spline_segment(segment, lissage=0):
     return tck
 
 
-# ----------------------------------------------------------------------
-# 6. Normalisation coin-à-coin
-# ----------------------------------------------------------------------
+# 6. normalisation coin-à-coin
+
 
 def normaliser_segment(segment):
-    """Exprime un segment dans un repère où le premier coin est l'origine
-    et l'axe (along) relie les deux coins du segment. `height` mesure
-    l'écart perpendiculaire à cet axe (utile pour comparer la forme des
-    côtés indépendamment de leur position/orientation)."""
+    # met le segment dans un repère où le 1er coin est l'origine et l'axe relie les 2 coins. height mesure l'écart perpendiculaire à cet axe, utile pour comparer la forme des côtés peu importe leur position/orientation
     x = segment[:, 1].astype(float)
     y = segment[:, 0].astype(float)
 
@@ -401,42 +346,30 @@ def normaliser_segment(segment):
     return np.column_stack([along, height])
 
 
-
-# ----------------------------------------------------------------------
-# Figure de vérification (une par pièce, 4 panneaux = 4 étapes clés)
-# ----------------------------------------------------------------------
+# figure de vérification (une par pièce, 4 panneaux = 4 étapes clés)
 
 _COULEURS_SEGMENTS = ["red", "blue", "green", "orange", "purple", "brown"]
 
 
 def verifier_piece_visuellement(img, masque_final, contour_principal, contour_lisse,
                                  coins_finaux, segments, splines, nom_fichier, dossier_sortie=None):
-    """Construit une figure unique à 4 panneaux qui permet de vérifier
-    d'un coup d'œil que chaque étape du pipeline s'est bien passée :
+    # figure à 4 panneaux pour vérifier d'un coup d'œil que chaque étape s'est bien passée :
+    # 1. image + masque (la pièce est bien isolée du fond ?)
+    # 2. contour + coins retenus (les 4 coins sont aux bons endroits ?)
+    # 3. segments colorés (le découpage en 4 côtés est cohérent ?)
+    # 4. côtés normalisés superposés (comparaison de forme)
 
-      1. image + masque de segmentation en surimpression (la pièce est-elle
-         bien isolée du fond ?)
-      2. contour lissé + coins retenus (les 4 coins sont-ils aux bons
-         endroits ?)
-      3. segments/côtés colorés (le découpage en 4 côtés est-il cohérent ?)
-      4. côtés normalisés dans le repère coin-à-coin, superposés (permet de
-         comparer visuellement la forme des côtés d'une même pièce)
-
-    Si `dossier_sortie` est fourni, la figure est enregistrée en PNG dans ce
-    dossier (nom : verif_<nom_fichier>.png) plutôt qu'affichée à l'écran —
-    pratique pour vérifier un lot de pièces sans ouvrir une fenêtre par pièce.
-    """
     fig, axes = plt.subplots(2, 2, figsize=(11, 11))
     fig.suptitle(nom_fichier, fontsize=14, fontweight="bold")
 
-    # 1. Image + masque
+    # 1. image + masque
     ax = axes[0, 0]
     ax.imshow(img)
     ax.imshow(masque_final, cmap="Reds", alpha=0.35)
     ax.set_title("1. Image + masque de segmentation")
     ax.axis("off")
 
-    # 2. Contour + coins
+    # 2. contour + coins
     ax = axes[0, 1]
     ax.plot(contour_principal[:, 1], contour_principal[:, 0], '.',
              markersize=1, color="gray", alpha=0.4, label="contour brut")
@@ -450,7 +383,7 @@ def verifier_piece_visuellement(img, masque_final, contour_principal, contour_li
     ax.set_title("2. Contour + coins détectés")
     ax.legend(fontsize=7, loc="best")
 
-    # 3. Segments + spline ajustée sur chaque côté
+    # 3. segments + spline ajustée sur chaque côté
     ax = axes[1, 0]
     for i, (seg, tck) in enumerate(zip(segments, splines)):
         couleur = _COULEURS_SEGMENTS[i % len(_COULEURS_SEGMENTS)]
@@ -463,7 +396,7 @@ def verifier_piece_visuellement(img, masque_final, contour_principal, contour_li
     ax.set_title("3. Segments détectés + spline ajustée")
     ax.legend(fontsize=7, loc="best")
 
-    # 4. Segments normalisés
+    # 4. segments normalisés
     ax = axes[1, 1]
     for i, seg in enumerate(segments):
         couleur = _COULEURS_SEGMENTS[i % len(_COULEURS_SEGMENTS)]
@@ -491,30 +424,16 @@ def verifier_piece_visuellement(img, masque_final, contour_principal, contour_li
         plt.show()
 
 
-# ----------------------------------------------------------------------
-# Pipeline principal
-# ----------------------------------------------------------------------
+# pipeline principal
+
 
 def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
                     verifier=True, utiliser_grabcut=UTILISER_GRABCUT,
                     fraction_distance_min_coins=FRACTION_DISTANCE_MIN_COINS,
                     sigma_harris=2):
-    """Analyse une pièce et renvoie masque, contour, coins, segments et
-    splines. Si `verifier=True`, enregistre (ou affiche, si
-    `dossier_verification` est None) la figure récapitulative en 4 panneaux.
-
-    Les coins sont détectés par `detecter_coins_harris_convexe` : on ne
-    considère que les points de l'enveloppe convexe du contour (élimine les
-    creux d'encoches), puis on garde ceux à plus forte réponse de Harris
-    (`sigma_harris` en contrôle l'échelle) — voir la docstring de cette
-    fonction pour le détail.
-
-    `fraction_distance_min_coins` : distance minimale entre deux coins
-    retenus, en fraction du périmètre du contour. Une valeur plus PETITE
-    autorise des coins plus proches les uns des autres (utile si deux vrais
-    coins sont proches sur une pièce peu carrée) ; plus GRANDE force les
-    coins à être mieux répartis.
-    """
+    # renvoie masque, contour, coins, segments et splines
+    # fraction_distance_min_coins : distance min entre 2 coins, en fraction du périmètre plus petit -> coins plus proches autorisés (utile si 2 vrais coins sont proches sur une pièce peu carrée). plus grand -> coins mieux répartis
+    
     nom_fichier = os.path.basename(fichier_image)
 
     img, img_h, img_s, img_v = charger_image(fichier_image)
@@ -559,9 +478,7 @@ def analyser_piece(fichier_image=FICHIER_IMAGE, dossier_verification=None,
 
 
 if __name__ == "__main__":
-    # Charge automatiquement toutes les pièces du dossier elodie/puzzle1/,
-    # nommées 1_1.jpg, 1_2.jpg, ..., 1_12.jpg, et génère la figure de
-    # vérification de chacune dans puzzle1/verification/.
+
     DOSSIER_SCRIPT = os.path.dirname(os.path.abspath(__file__))
     DOSSIER_PUZZLE = os.path.join(DOSSIER_SCRIPT, "puzzle1")
     DOSSIER_VERIFICATION = os.path.join(DOSSIER_PUZZLE, "verification")

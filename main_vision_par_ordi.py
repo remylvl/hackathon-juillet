@@ -577,9 +577,7 @@ PENALITE_MEME_PIECE = 1e6  # pour empêcher une pièce de s'associer avec elle-m
 
 
 def associer_pieces(dict_ctrl):
-    # associe les côtés complémentaires (bosse <-> creux) entre pièces différentes
-    # avec l'algo hongrois, qui minimise la distance totale sur toutes les associations d'un coup (contrairement à un appariement glouton, qui peut gâcher une bonne paire trouvée plus tard)
-    # renvoie une liste de paires ((pieceA, coteA), (pieceB, coteB))
+    # associe les côtés complémentaires (bosse <-> creux) entre pièces différentes avec l'algo hongrois, qui minimise la distance totale sur toutes les associations d'un coup (contrairement à un appariement glouton, qui peut gâcher une bonne paire trouvée plus tard) renvoie une liste de paires ((pieceA, coteA), (pieceB, coteB))
     bosses = []
     creux = []
     for pid, cotes_piece in dict_ctrl.items():
@@ -674,8 +672,7 @@ def visualiser_schema_pieces(dict_ctrl, associations):
 
 
 def layout_force_diriges(n_pieces, aretes, iterations=300, seed=0):
-    # place les pièces dans le plan avec des forces dirigées : tout se repousse,
-    # sauf les pièces reliées par une association qui s'attirent
+    # place les pièces dans le plan avec des forces dirigées : tout se repousse, sauf les pièces reliées par une association qui s'attirent
     rng = np.random.default_rng(seed)
     pos = rng.uniform(-1, 1, size=(n_pieces, 2))
     k = 1.0 / np.sqrt(n_pieces)
@@ -720,8 +717,7 @@ def _extent_image(rgba, x, y, taille_cible=1.6):
 
 def visualiser_assemblage_images(dict_ctrl, associations, images_pieces,
                                   iterations=300, taille_cible=1.6, seed=0):
-    # affiche les vraies photos des pièces, placées par forces dirigées pour
-    # que les pièces associées se retrouvent proches les unes des autres
+    # affiche les vraies photos des pièces, placées par forces dirigées pour que les pièces associées se retrouvent proches les unes des autres
     piece_ids = sorted(pid for pid in dict_ctrl.keys() if pid in images_pieces)
     index = {pid: i for i, pid in enumerate(piece_ids)}
     n = len(piece_ids)
@@ -773,9 +769,7 @@ def _matrice_rotation(theta):
 
 
 def assembler_pieces(dict_ctrl, associations, geometrie_pieces, piece_racine=None):
-    # calcule la rotation + translation de chaque pièce atteignable depuis
-    # piece_racine, pour que les côtés associés se superposent exactement
-    # renvoie (placements, non_places)
+    # calcule la rotation + translation de chaque pièce atteignable depuis piece_racine, pour que les côtés associés se superposent exactement renvoie (placements, non_places)
     graphe = {pid: [] for pid in dict_ctrl.keys()}
     for (pA, cA), (pB, cB) in associations:
         graphe[pA].append((cA, pB, cB))
@@ -825,8 +819,7 @@ def assembler_pieces(dict_ctrl, associations, geometrie_pieces, piece_racine=Non
 
 def visualiser_assemblage_colle(dict_ctrl, associations, images_pieces, geometrie_pieces,
                                  piece_racine=None):
-    # assemble et affiche les pièces en collant vraiment leurs côtés associés
-    # (rotation + translation exactes). renvoie placements
+    # assemble et affiche les pièces en collant vraiment leurs côtés associés (rotation + translation exactes). renvoie placements
     placements, non_places = assembler_pieces(
         dict_ctrl, associations, geometrie_pieces, piece_racine=piece_racine
     )
@@ -874,9 +867,7 @@ def visualiser_assemblage_colle(dict_ctrl, associations, images_pieces, geometri
 # main
 
 if __name__ == "__main__":
-    # 1. dict_ctrl (+ images et géométrie) pour toutes les pièces du dossier
-    #    (détection convexe+harris, figure de vérif enregistrée pour chaque
-    #    pièce, puis bspline + classification bosse/creux/plat)
+    # 1. dict_ctrl (+ images et géométrie) pour toutes les pièces du dossier (détection convexe+harris, figure de vérif enregistrée pour chaque pièce, puis bspline + classification bosse/creux/plat)
     dict_ctrl, images_pieces, geometrie_pieces = construire_dict_ctrl_pour_plusieurs_pieces(
         DOSSIER_PUZZLE, dossier_verification=DOSSIER_VERIFICATION, nb_pieces=NB_PIECES
     )
@@ -902,8 +893,7 @@ if __name__ == "__main__":
     print("\n=== Schéma des pièces et associations ===")
     visualiser_schema_pieces(dict_ctrl, associations)
 
-    # 4. assemblage géométrique réel : on part d'une pièce (la 0 par défaut)
-    #    et on colle les côtés associés de proche en proche
+    # 4. assemblage géométrique réel : on part d'une pièce (la 0 par défaut) et on colle les côtés associés de proche en proche
     print("\n=== Assemblage des pièces (côtés collés) ===")
     visualiser_assemblage_colle(dict_ctrl, associations, images_pieces, geometrie_pieces)
 
