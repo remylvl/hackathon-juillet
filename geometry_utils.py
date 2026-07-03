@@ -7,7 +7,6 @@ def extract_and_normalize_edges(mask: np.ndarray, corners: np.ndarray) -> list:
     pour un algorithme d'ajustement de courbe (Moindres Carrés).
     """
     # 1. Extraction du contour complet continu
-    # CHAIN_APPROX_NONE est crucial : on veut tous les pixels, sans simplification
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         raise ValueError("Aucun contour détecté dans le masque.")

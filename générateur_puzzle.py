@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.interpolate import BSpline
 import random
+import copy
 
 # Générateur et Mélangeur
 
@@ -137,6 +138,72 @@ def associer_pieces(dict_ctrl):
 
 # Affichage
 
+def visualiser_schema_pieces(dict_ctrl_original, associations):
+    """
+    Visualisation schématique des pièces et de leurs côtés associés
+    (Représentation sous forme de graphe carré).
+    """
+    dict_ctrl = copy.deepcopy(dict_ctrl_original)
+    n_pieces = len(dict_ctrl)
+
+    # Placement radial des pièces autour du centre
+    angle_step = 2 * np.pi / max(1, n_pieces)
+    radius = 5
+
+    positions = {}
+    for i, pid in enumerate(dict_ctrl.keys()):
+        angle = i * angle_step
+        x = radius * np.cos(angle)
+        y = radius * np.sin(angle)
+        positions[pid] = (x, y)
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    ax.set_title("Schéma Logique des Pièces Mélangées", fontsize=14, fontweight='bold')
+
+    # Dessin des pièces
+    for pid, (x, y) in positions.items():
+        # carré représentant la pièce
+        ax.add_patch(plt.Rectangle((x - 1, y - 1), 2, 2, fill=False, linewidth=2))
+        ax.text(x, y, str(pid), ha="center", va="center", fontsize=9, color="darkblue")
+
+        # côtés : haut, droite, bas, gauche
+        cotes = [
+            ((x - 1, y + 1), (x + 1, y + 1)),  # haut (0)
+            ((x + 1, y + 1), (x + 1, y - 1)),  # droite (1)
+            ((x - 1, y - 1), (x + 1, y - 1)),  # bas (2)
+            ((x - 1, y + 1), (x - 1, y - 1)),  # gauche (3)
+        ]
+
+        dict_ctrl[pid].append({"schema_cotes": cotes})
+
+        for i, (p1, p2) in enumerate(cotes):
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]], color="gray", linewidth=1)
+            cx = (p1[0] + p2[0]) / 2
+            cy = (p1[1] + p2[1]) / 2
+            ax.text(cx, cy, f"{i}", fontsize=10, color="black", fontweight='bold')
+
+    # --- Dessin des associations ---
+    for (pA, cA), (pB, cB) in associations:
+        cotesA = dict_ctrl[pA][-1]["schema_cotes"]
+        cotesB = dict_ctrl[pB][-1]["schema_cotes"]
+
+        p1A, p2A = cotesA[cA]
+        p1B, p2B = cotesB[cB]
+
+        # centre des côtés
+        cxA = (p1A[0] + p2A[0]) / 2
+        cyA = (p1A[1] + p2A[1]) / 2
+        cxB = (p1B[0] + p2B[0]) / 2
+        cyB = (p1B[1] + p2B[1]) / 2
+
+        # tracer la liaison
+        ax.plot([cxA, cxB], [cyA, cyB], "r--", linewidth=2)
+
+    ax.set_aspect("equal")
+    ax.axis("off")
+    plt.show(block=False)
+
+
 def reconstruire_coordonnees(dict_ctrl, associations):
     """
     Parcourt les associations de proche en proche pour déduire les (x, y) de chaque pièce.
@@ -227,26 +294,29 @@ def afficher_comparaison(dict_parfait, pos_parfaites, dict_melange, pos_reconstr
     plt.show()
 
 
-# EXÉCUTION DU TEST COMPLET
+# Exécution
 
 if __name__ == "__main__":
     LIGNES = 3
     COLONNES = 4
     
-    print("1. Génération du puzzle original...")
+    print("1. Génération du puzzle original")
     dict_ctrl_original = generer_puzzle_complet(LIGNES, COLONNES)
-    # Positions théoriques parfaites
+    # Positions théoriques 
     pos_originales = {r*COLONNES+c: (r, c) for r in range(LIGNES) for c in range(COLONNES)}
     
-    print("2. Mélange total des pièces (simulation de la réalité)...")
+    print("2. Mélange total des pièces")
     dict_ctrl_melange = melanger_dictionnaire_puzzle(dict_ctrl_original)
     
-    print("3. Algorithme de Résolution à l'aveugle...")
+    print("3. Algorithme de résolution")
     associations = associer_pieces(dict_ctrl_melange)
     print(f" -> {len(associations)} liaisons trouvées par l'algorithme.")
+
+    print("Affichage du Schéma Logique des Pièces")
+    visualiser_schema_pieces(dict_ctrl_melange, associations)
     
-    print("4. Propagation BFS des coordonnées pour le dessin...")
+    print("4. Propagation BFS des coordonnées pour le dessin")
     pos_reconstruites = reconstruire_coordonnees(dict_ctrl_melange, associations)
     
-    print("5. Affichage comparatif...")
+    print("5. Affichage")
     afficher_comparaison(dict_ctrl_original, pos_originales, dict_ctrl_melange, pos_reconstruites)
