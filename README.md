@@ -30,12 +30,12 @@ python main.py
 - `associations` : liste de tuples `((piece_A, côté_A), (piece_B, côté_B))`.
 - Plusieurs fenêtres matplotlib si `AFFICHER_GRAPHIQUES=True` (masque, contour+coins, splines, segments normalisés, schéma final).
 
-# Puzzle Solver — README POUR inference_hackathon.py
+# Puzzle Solver — README POUR main_reseau_de_neurones.py
 
 ## Utilisation 
 
-Image d'entrée : Vous devez renseigner le chemin vers la photo de la pièce de puzzle à analyser (par défaut algo_tuteur/photo_test_5.jpg).
-Lancement : Exécutez simplement le script de manière classique via la commande python inference_hackathon.py
+Image d'entrée : Vous devez renseigner le chemin vers la photo de la pièce de puzzle à analyser (par défaut reseau_de_neurones/data_photo/photo_test_5.jpg).
+Lancement : Exécutez simplement le script de manière classique via la commande python main_reseau_de_neurones.py
 
 ## Sortie 
 
